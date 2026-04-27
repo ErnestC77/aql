@@ -8,7 +8,6 @@ const app = express();
 app.use(express.json());
 
 const sessions = {};
-
 const SHEET_NAME = "Sheet1";
 
 const aircraftList = [
@@ -22,16 +21,32 @@ const equipmentList = [
   "PAXSTEP", "GPU", "SCISSORLIFT", "NITROGEN", "JACK", "DOLLY"
 ];
 
-const fields = [
+const flightList = [
+  "TVR4701", "TVR4702", "TVR4703", "TVR4704",
+  "TVR4707", "TVR4716", "TVR4717"
+];
+
+const baseFields = [
   { key: "Flight", label: "Номер рейса" },
   { key: "Date", label: "Дата" },
-  { key: "Equipment / Company", label: "Наземное оборудование / Компания" },
-  { key: "Time in", label: "Время начала использования" },
-  { key: "Time out", label: "Время окончания использования" },
-  { key: "Aircraft", label: "Самолёт" },
-  { key: "Airport", label: "Аэропорт" },
-  { key: "Engineer Name", label: "Имя инженера" },
+  { key: "CombinedInfo", label: "Самолёт, аэропорт, инженер" },
 ];
+
+const editableFields = [
+  { key: "Flight", label: "Номер рейса", col: 1 },
+  { key: "Date", label: "Дата", col: 2 },
+  { key: "Equipment / Company", label: "Оборудование", col: 3 },
+  { key: "Time in", label: "Время начала", col: 4 },
+  { key: "Time out", label: "Время окончания", col: 5 },
+  { key: "Aircraft", label: "Самолёт", col: 7 },
+  { key: "Airport", label: "Аэропорт", col: 8 },
+  { key: "Engineer Name", label: "Инженер", col: 9 },
+];
+
+function short(text, max = 24) {
+  if (!text) return "";
+  return text.length > max ? text.substring(0, max - 3) + "..." : text;
+}
 
 async function getSheetsClient() {
   const auth = new google.auth.JWT({
@@ -113,11 +128,11 @@ async function sendButtons(to, body, buttons) {
         type: "button",
         body: { text: body },
         action: {
-          buttons: buttons.map((btn) => ({
+          buttons: buttons.slice(0, 3).map((btn) => ({
             type: "reply",
             reply: {
               id: btn.id,
-              title: btn.title,
+              title: short(btn.title, 20),
             },
           })),
         },
@@ -146,14 +161,14 @@ async function sendList(to, body, buttonText, rows) {
         type: "list",
         body: { text: body },
         action: {
-          button: buttonText,
+          button: short(buttonText, 20),
           sections: [
             {
               title: "Выбор",
               rows: rows.slice(0, 10).map((row) => ({
                 id: row.id,
-                title: row.title,
-                description: row.description || "",
+                title: short(row.title, 24),
+                description: short(row.description || "", 72),
               })),
             },
           ],
@@ -185,28 +200,26 @@ function extractIncomingText(message) {
   return "";
 }
 
-async function saveToSheet(data) {
+async function saveRowsToSheet(baseData, equipmentEntries) {
   const sheets = await getSheetsClient();
 
-  const totalUsage = calculateUsage(data["Time in"], data["Time out"]);
-
-  const row = [
-    data["Flight"] || "",
-    data["Date"] || "",
-    data["Equipment / Company"] || "",
-    data["Time in"] || "",
-    data["Time out"] || "",
-    totalUsage,
-    data["Aircraft"] || "",
-    data["Airport"] || "",
-    data["Engineer Name"] || "",
-  ];
+  const rows = equipmentEntries.map((item) => [
+    baseData["Flight"] || "",
+    baseData["Date"] || "",
+    item.equipment || "",
+    item.timeIn || "",
+    item.timeOut || "",
+    calculateUsage(item.timeIn, item.timeOut),
+    baseData["Aircraft"] || "",
+    baseData["Airport"] || "",
+    baseData["Engineer Name"] || "",
+  ]);
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
     range: `'${SHEET_NAME}'!A:I`,
     valueInputOption: "USER_ENTERED",
-    requestBody: { values: [row] },
+    requestBody: { values: rows },
   });
 }
 
@@ -251,121 +264,8 @@ async function updateCell(rowNumber, columnNumber, value) {
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
     range: `'${SHEET_NAME}'!${columnLetter}${rowNumber}`,
     valueInputOption: "USER_ENTERED",
-    requestBody: {
-      values: [[value]],
-    },
+    requestBody: { values: [[value]] },
   });
-}
-
-async function showMainMenu(to) {
-  await sendButtons(to, "Выберите действие:", [
-    { id: "ADD", title: "Внести данные" },
-    { id: "EDIT", title: "Редактировать" },
-  ]);
-}
-
-async function askCurrentField(to, session) {
-  const field = fields[session.step];
-
-  if (field.key === "Date") {
-    await sendButtons(to, "Выберите дату:", [
-      { id: "DATE_TODAY", title: "Сегодня" },
-      { id: "DATE_MANUAL", title: "Ввести дату" },
-    ]);
-    return;
-  }
-
-  if (field.key === "Equipment / Company") {
-    const rows = equipmentList.map((e) => ({
-      id: `EQUIPMENT_${e}`,
-      title: e,
-    }));
-
-    rows.push({ id: "EQUIPMENT_MANUAL", title: "Ввести вручную" });
-
-    await sendList(to, "Выберите наземное оборудование:", "Выбрать", rows);
-    return;
-  }
-
-  if (field.key === "Time in") {
-    await sendMessage(to, "Введите время начала использования вручную, например 10:20:");
-    return;
-  }
-
-  if (field.key === "Time out") {
-    await sendButtons(to, "Введите время окончания использования или пропустите:", [
-      { id: "TIME_OUT_SKIP", title: "Пропустить" },
-      { id: "TIME_OUT_ENTER", title: "Ввести время" },
-    ]);
-    return;
-  }
-
-  if (field.key === "Aircraft") {
-    await sendList(
-      to,
-      "Выберите самолёт:",
-      "Выбрать",
-      aircraftList.map((a) => ({ id: `AIRCRAFT_${a}`, title: a }))
-    );
-    return;
-  }
-
-  if (field.key === "Airport") {
-    const rows = airportList.map((a) => ({ id: `AIRPORT_${a}`, title: a }));
-    rows.push({ id: "AIRPORT_MANUAL", title: "Ввести вручную" });
-
-    await sendList(to, "Выберите аэропорт:", "Выбрать", rows);
-    return;
-  }
-
-  await sendMessage(to, `Введите: ${field.label}`);
-}
-
-function buildPreview(data) {
-  const totalUsage = calculateUsage(data["Time in"], data["Time out"]);
-
-  return `Проверьте данные:
-
-Номер рейса: ${data["Flight"] || ""}
-Дата: ${data["Date"] || ""}
-Наземное оборудование / Компания: ${data["Equipment / Company"] || ""}
-Время начала использования: ${data["Time in"] || ""}
-Время окончания использования: ${data["Time out"] || "не указано"}
-Общее время использования: ${totalUsage || "будет рассчитано после ввода окончания"}
-Самолёт: ${data["Aircraft"] || ""}
-Аэропорт: ${data["Airport"] || ""}
-Имя инженера: ${data["Engineer Name"] || ""}`;
-}
-
-async function finishAddFlow(from, session) {
-  if (session.step < fields.length) {
-    await askCurrentField(from, session);
-    return;
-  }
-
-  session.mode = "confirm";
-
-  await sendButtons(from, `${buildPreview(session.data)}
-
-Сохранить?`, [
-    { id: "SAVE_YES", title: "Да" },
-    { id: "SAVE_NO", title: "Нет" },
-  ]);
-}
-
-function getColumnByField(fieldKey) {
-  const map = {
-    "Flight": 1,
-    "Date": 2,
-    "Equipment / Company": 3,
-    "Time in": 4,
-    "Time out": 5,
-    "Aircraft": 7,
-    "Airport": 8,
-    "Engineer Name": 9,
-  };
-
-  return map[fieldKey];
 }
 
 async function recalculateTotalUsage(rowNumber) {
@@ -374,6 +274,129 @@ async function recalculateTotalUsage(rowNumber) {
 
   const totalUsage = calculateUsage(row[3], row[4]);
   await updateCell(rowNumber, 6, totalUsage);
+}
+
+async function showMainMenu(to) {
+  await sendButtons(to, "Главное меню:", [
+    { id: "ADD", title: "Внести данные" },
+    { id: "EDIT", title: "Редактировать" },
+	{ id: "FILL_MISSING", title: "Дополнить" },
+  ]);
+}
+
+async function goToMainMenu(from) {
+  sessions[from] = {
+    mode: "menu",
+    step: 0,
+    baseData: {},
+    equipmentEntries: [],
+    currentEquipment: null,
+  };
+
+  await showMainMenu(from);
+}
+
+async function askBaseField(to, session) {
+  const field = baseFields[session.step];
+
+  if (field.key === "Flight") {
+    const rows = flightList.map((f) => ({
+      id: `FLIGHT_${f}`,
+      title: f,
+    }));
+
+    rows.push({ id: "FLIGHT_MANUAL", title: "Ввести вручную" });
+
+    await sendList(to, "Выберите номер рейса:", "Выбрать", rows);
+    return;
+  }
+
+  if (field.key === "Date") {
+    await sendButtons(to, "Выберите дату:", [
+      { id: "DATE_TODAY", title: "Сегодня" },
+      { id: "DATE_MANUAL", title: "Ввести дату" },
+      { id: "MAIN_MENU", title: "Главное меню" },
+    ]);
+    return;
+  }
+
+  if (field.key === "CombinedInfo") {
+    await sendMessage(
+      to,
+      "Введите самолёт, аэропорт и инженера одним сообщением:\n\nПример:\nER-BAS, SHJ, Gromov R."
+    );
+    return;
+  }
+
+  await sendMessage(to, `Введите: ${field.label}`);
+}
+
+async function askEquipment(to, session) {
+  const selected = (session.equipmentEntries || []).map((item) => item.equipment);
+
+  const available = equipmentList.filter((e) => !selected.includes(e));
+
+  if (available.length === 0) {
+    session.mode = "confirm";
+
+    await sendButtons(to, `${buildPreview(session.baseData, session.equipmentEntries)}
+
+Все виды оборудования уже выбраны.
+
+Сохранить?`, [
+      { id: "SAVE_YES", title: "Да" },
+      { id: "SAVE_NO", title: "Нет" },
+      { id: "MAIN_MENU", title: "Главное меню" },
+    ]);
+
+    return;
+  }
+
+  const rows = available.map((e) => ({
+    id: `EQUIPMENT_${e}`,
+    title: e,
+  }));
+
+  rows.push({ id: "EQUIPMENT_MANUAL", title: "Ввести вручную" });
+
+  await sendList(to, "Выберите наземное оборудование:", "Выбрать", rows);
+}
+
+function buildPreview(baseData, equipmentEntries) {
+  const equipmentText = equipmentEntries.map((item, index) => {
+    const total = calculateUsage(item.timeIn, item.timeOut);
+
+    return `${index + 1}. ${item.equipment}
+Начало: ${item.timeIn || ""}
+Окончание: ${item.timeOut || "не указано"}
+Общее время: ${total || "будет позже"}`;
+  }).join("\n\n");
+
+  return `Проверьте данные:
+
+Номер рейса: ${baseData["Flight"] || ""}
+Дата: ${baseData["Date"] || ""}
+Самолёт: ${baseData["Aircraft"] || ""}
+Аэропорт: ${baseData["Airport"] || ""}
+Имя инженера: ${baseData["Engineer Name"] || ""}
+
+Оборудование:
+${equipmentText}`;
+}
+
+async function finishBaseFlow(from, session) {
+  if (session.step < baseFields.length) {
+    await askBaseField(from, session);
+    return;
+  }
+
+  session.mode = "equipment_choose";
+  await askEquipment(from, session);
+}
+
+function getColumnByField(fieldKey) {
+  const item = editableFields.find((f) => f.key === fieldKey);
+  return item?.col;
 }
 
 app.get("/webhook", (req, res) => {
@@ -388,6 +411,37 @@ app.get("/webhook", (req, res) => {
   res.sendStatus(403);
 });
 
+async function showMissingRecords(from, session) {
+  const rows = await getRowsLast24Hours();
+
+  const missing = rows.filter((item) => {
+    const row = item.row;
+    return row[3] && !row[4]; // есть время начала, но нет времени окончания
+  });
+
+  if (missing.length === 0) {
+    await sendMessage(from, "Незаполненных записей за последние 24 часа нет.");
+    await goToMainMenu(from);
+    return;
+  }
+
+  session.mode = "missing_choose_record";
+  session.missing = missing;
+
+  const listRows = missing.slice(0, 10).map((item, index) => ({
+    id: `MISSING_RECORD_${index}`,
+    title: short(`${item.row[2]} ${item.row[3]}`, 24),
+    description: short(`Рейс: ${item.row[0] || ""} | ${item.row[6] || ""} | ${item.row[7] || ""} | ${item.row[8] || ""}`, 72),
+  }));
+
+  await sendList(
+    from,
+    "Выберите оборудование, где не заполнено время окончания:",
+    "Выбрать",
+    listRows
+  );
+}
+
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
@@ -400,27 +454,73 @@ app.post("/webhook", async (req, res) => {
     if (!text) return;
 
     if (!sessions[from]) {
-      sessions[from] = { mode: "menu", step: 0, data: {} };
+      sessions[from] = {
+        mode: "menu",
+        step: 0,
+        baseData: {},
+        equipmentEntries: [],
+        currentEquipment: null,
+      };
+
       await showMainMenu(from);
       return;
     }
 
     const session = sessions[from];
+	if (text === "FILL_MISSING") {
+		await showMissingRecords(from, session);
+		return;
+	}
 
-    if (text.toLowerCase() === "menu" || text.toLowerCase() === "меню") {
-      sessions[from] = { mode: "menu", step: 0, data: {} };
-      await showMainMenu(from);
+    if (
+      text === "MAIN_MENU" ||
+      text.toLowerCase() === "menu" ||
+      text.toLowerCase() === "меню" ||
+      text.toLowerCase() === "start" ||
+      text.toLowerCase() === "старт"
+    ) {
+      await goToMainMenu(from);
       return;
     }
 
     if (session.mode === "menu") {
       if (text === "ADD") {
-        session.mode = "add";
+        session.mode = "base";
         session.step = 0;
-        session.data = {};
-        await askCurrentField(from, session);
+        session.baseData = {};
+        session.equipmentEntries = [];
+        session.currentEquipment = null;
+
+        await askBaseField(from, session);
         return;
       }
+	  
+	  if (text === "FILL_MISSING") {
+		const rows = await getRowsLast24Hours();
+
+		const missing = rows.filter((item) => {
+		const row = item.row;
+		return row[3] && !row[4]; // есть Time in, но нет Time out
+		});
+
+		if (missing.length === 0) {
+			await sendMessage(from, "Незаполненных записей за последние 24 часа нет.");
+			await showMainMenu(from);
+			return;
+			}
+
+		session.mode = "missing_choose_record";
+		session.missing = missing;
+
+		const listRows = missing.slice(0, 10).map((item, index) => ({
+		id: `MISSING_RECORD_${index}`,
+		title: short(`${item.row[0]} ${item.row[2]}`, 24),
+		description: `${item.row[3] || ""} | ${item.row[6] || ""} | ${item.row[7] || ""}`,
+		}));
+
+		await sendList(from, "Выберите запись без окончания:", "Выбрать", listRows);
+		return;
+	}
 
       if (text === "EDIT") {
         const found = await getRowsLast24Hours();
@@ -436,8 +536,8 @@ app.post("/webhook", async (req, res) => {
 
         const listRows = found.slice(0, 10).map((item, index) => ({
           id: `EDIT_RECORD_${index}`,
-          title: `${item.row[0]} | ${item.row[1]}`,
-          description: `${item.row[3] || ""}-${item.row[4] || "не окончено"} | ${item.row[6] || ""} | ${item.row[7] || ""}`,
+          title: short(`${item.row[0]} ${item.row[2]}`, 24),
+          description: short(`${item.row[3] || ""}-${item.row[4] || "не окончено"} | ${item.row[6] || ""} | ${item.row[7] || ""} | ${item.row[8] || ""}`, 72),
         }));
 
         await sendList(from, "Записи за последние 24 часа:", "Выбрать", listRows);
@@ -448,120 +548,304 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    if (session.mode === "add") {
-      const field = fields[session.step];
+    if (session.mode === "base") {
+      const field = baseFields[session.step];
 
-      if (text.startsWith("EQUIPMENT_")) {
-        const equipment = text.replace("EQUIPMENT_", "");
+	  if (text.startsWith("FLIGHT_")) {
+		const flight = text.replace("FLIGHT_", "");
 
-        if (equipment === "MANUAL") {
-          session.mode = "add_manual_equipment";
-          await sendMessage(from, "Введите наземное оборудование / компанию вручную:");
-          return;
-        }
+		if (flight === "MANUAL") {
+			session.mode = "base_manual_flight";
+			await sendMessage(from, "Введите номер рейса вручную:");
+			return;
+		}
 
-        session.data["Equipment / Company"] = equipment;
-        session.step++;
-        await finishAddFlow(from, session);
-        return;
-      }
+		session.baseData["Flight"] = flight;
+		session.step++;
+		await finishBaseFlow(from, session);
+		return;
+	}
 
       if (text === "DATE_TODAY") {
-        session.data["Date"] = todayDate();
+        session.baseData["Date"] = todayDate();
       } else if (text === "DATE_MANUAL") {
-        session.mode = "add_manual_date";
+        session.mode = "base_manual_date";
         await sendMessage(from, "Введите дату вручную, например 27.04.2026:");
         return;
-      } else if (text === "TIME_OUT_SKIP") {
-        session.data["Time out"] = "";
-      } else if (text === "TIME_OUT_ENTER") {
-        session.mode = "add_time_out_manual";
-        await sendMessage(from, "Введите время окончания использования, например 12:45:");
-        return;
       } else if (text.startsWith("AIRCRAFT_")) {
-        session.data["Aircraft"] = text.replace("AIRCRAFT_", "");
+        session.baseData["Aircraft"] = text.replace("AIRCRAFT_", "");
       } else if (text.startsWith("AIRPORT_")) {
         const airport = text.replace("AIRPORT_", "");
 
         if (airport === "MANUAL") {
-          session.mode = "add_manual_airport";
+          session.mode = "base_manual_airport";
           await sendMessage(from, "Введите аэропорт вручную:");
           return;
         }
 
-        session.data["Airport"] = airport;
-      } else {
-        session.data[field.key] = text;
+        session.baseData["Airport"] = airport;
+      } 
+	  else if (field.key === "CombinedInfo") {
+		const parts = text.split(",").map((x) => x.trim());
+
+		if (parts.length < 3) {
+			await sendMessage(from,"Введите в формате:\nСамолёт, Аэропорт, Инженер\n\nПример:\nER-BAS, SHJ, Ernest");
+			return;
+		}
+
+		session.baseData["Aircraft"] = parts[0].toUpperCase();
+		session.baseData["Airport"] = parts[1].toUpperCase();
+		session.baseData["Engineer Name"] = parts.slice(2).join(" ");
+	  }
+	  else {
+        session.baseData[field.key] = text;
       }
 
       session.step++;
-      await finishAddFlow(from, session);
+      await finishBaseFlow(from, session);
+      return;
+    }
+	
+	if (session.mode === "base_manual_flight") {
+		session.baseData["Flight"] = text.toUpperCase();
+		session.mode = "base";
+		session.step++;
+		await finishBaseFlow(from, session);
+		return;
+	}
+
+    if (session.mode === "base_manual_date") {
+      session.baseData["Date"] = text;
+      session.mode = "base";
+      session.step++;
+      await finishBaseFlow(from, session);
       return;
     }
 
-    if (session.mode === "add_manual_equipment") {
-      session.data["Equipment / Company"] = text.toUpperCase();
-      session.mode = "add";
+    if (session.mode === "base_manual_airport") {
+      session.baseData["Airport"] = text.toUpperCase();
+      session.mode = "base";
       session.step++;
-      await finishAddFlow(from, session);
+      await finishBaseFlow(from, session);
       return;
     }
 
-    if (session.mode === "add_manual_date") {
-      session.data["Date"] = text;
-      session.mode = "add";
-      session.step++;
-      await finishAddFlow(from, session);
+    if (session.mode === "equipment_choose") {
+      let equipment = "";
+
+      if (text.startsWith("EQUIPMENT_")) {
+        equipment = text.replace("EQUIPMENT_", "");
+
+        if (equipment === "MANUAL") {
+          session.mode = "equipment_manual";
+          await sendMessage(from, "Введите название оборудования вручную:");
+          return;
+        }
+      } else {
+        equipment = text.toUpperCase();
+      }
+
+      session.currentEquipment = {
+        equipment,
+        timeIn: "",
+        timeOut: "",
+      };
+
+      session.mode = "equipment_time_in";
+      await sendMessage(from, `Введите время начала использования для ${equipment}, например 10:20:`);
       return;
     }
 
-    if (session.mode === "add_time_out_manual") {
-      session.data["Time out"] = text;
-      session.mode = "add";
-      session.step++;
-      await finishAddFlow(from, session);
+    if (session.mode === "equipment_manual") {
+      const equipment = text.toUpperCase();
+
+      session.currentEquipment = {
+        equipment,
+        timeIn: "",
+        timeOut: "",
+      };
+
+      session.mode = "equipment_time_in";
+      await sendMessage(from, `Введите время начала использования для ${equipment}, например 10:20:`);
       return;
     }
 
-    if (session.mode === "add_manual_airport") {
-      session.data["Airport"] = text.toUpperCase();
-      session.mode = "add";
-      session.step++;
-      await finishAddFlow(from, session);
+    if (session.mode === "equipment_time_in") {
+      session.currentEquipment.timeIn = text;
+
+      session.mode = "equipment_time_out_choice";
+      await sendButtons(from, `Время окончания для ${session.currentEquipment.equipment}:`, [
+        { id: "TIME_OUT_ENTER", title: "Ввести" },
+        { id: "TIME_OUT_SKIP", title: "Пропустить" },
+        { id: "MAIN_MENU", title: "Главное меню" },
+      ]);
+      return;
+    }
+
+    if (session.mode === "equipment_time_out_choice") {
+      if (text === "TIME_OUT_SKIP") {
+        session.currentEquipment.timeOut = "";
+        session.equipmentEntries.push(session.currentEquipment);
+        session.currentEquipment = null;
+
+        session.mode = "add_more_equipment";
+        await sendButtons(from, "Добавить ещё оборудование?", [
+          { id: "ADD_MORE_YES", title: "Да" },
+          { id: "ADD_MORE_NO", title: "Нет" },
+          { id: "MAIN_MENU", title: "Главное меню" },
+        ]);
+        return;
+      }
+
+      if (text === "TIME_OUT_ENTER") {
+        session.mode = "equipment_time_out_enter";
+        await sendMessage(from, "Введите время окончания, например 12:45:");
+        return;
+      }
+
+      await sendButtons(from, "Выберите действие:", [
+        { id: "TIME_OUT_ENTER", title: "Ввести" },
+        { id: "TIME_OUT_SKIP", title: "Пропустить" },
+        { id: "MAIN_MENU", title: "Главное меню" },
+      ]);
+      return;
+    }
+
+    if (session.mode === "equipment_time_out_enter") {
+      session.currentEquipment.timeOut = text;
+      session.equipmentEntries.push(session.currentEquipment);
+      session.currentEquipment = null;
+
+      session.mode = "add_more_equipment";
+      await sendButtons(from, "Добавить ещё оборудование?", [
+        { id: "ADD_MORE_YES", title: "Да" },
+        { id: "ADD_MORE_NO", title: "Нет" },
+        { id: "MAIN_MENU", title: "Главное меню" },
+      ]);
+      return;
+    }
+
+    if (session.mode === "add_more_equipment") {
+      if (text === "ADD_MORE_YES") {
+        session.mode = "equipment_choose";
+        await askEquipment(from, session);
+        return;
+      }
+
+      if (text === "ADD_MORE_NO") {
+        session.mode = "confirm";
+
+        await sendButtons(from, `${buildPreview(session.baseData, session.equipmentEntries)}
+
+Сохранить?`, [
+          { id: "SAVE_YES", title: "Да" },
+          { id: "SAVE_NO", title: "Нет" },
+          { id: "MAIN_MENU", title: "Главное меню" },
+        ]);
+        return;
+      }
+
+      await sendButtons(from, "Добавить ещё оборудование?", [
+        { id: "ADD_MORE_YES", title: "Да" },
+        { id: "ADD_MORE_NO", title: "Нет" },
+        { id: "MAIN_MENU", title: "Главное меню" },
+      ]);
       return;
     }
 
     if (session.mode === "confirm") {
       if (text === "SAVE_YES") {
-        await saveToSheet(session.data);
-        sessions[from] = { mode: "menu", step: 0, data: {} };
+		if (!session.equipmentEntries || session.equipmentEntries.length === 0) {
+			await sendMessage(from, "Нет оборудования для сохранения.");
+			await goToMainMenu(from);
+			return;
+		}
 
-        await sendMessage(from, "Данные сохранены в Google таблицу.");
-        await showMainMenu(from);
-        return;
-      }
+		const hasMissingTimeOut = session.equipmentEntries.some((item) => !item.timeOut);
+
+		await saveRowsToSheet(session.baseData, session.equipmentEntries);
+		await sendMessage(from, "Данные сохранены в Google таблицу.");
+
+		if (hasMissingTimeOut) {
+			await sendButtons(from, "Есть незаполненное время окончания.", [
+			{ id: "FILL_MISSING", title: "Ввести данные" },
+			{ id: "MAIN_MENU", title: "Главное меню" },
+			]);
+			return;
+		}
+
+		await goToMainMenu(from);
+		return;
+	}
 
       if (text === "SAVE_NO") {
-        sessions[from] = { mode: "menu", step: 0, data: {} };
         await sendMessage(from, "Запись отменена.");
-        await showMainMenu(from);
+        await goToMainMenu(from);
         return;
       }
+
+      await sendButtons(from, "Сохранить?", [
+        { id: "SAVE_YES", title: "Да" },
+        { id: "SAVE_NO", title: "Нет" },
+        { id: "MAIN_MENU", title: "Главное меню" },
+      ]);
+      return;
     }
+	
+	if (session.mode === "missing_choose_record") {
+		const index = Number(text.replace("MISSING_RECORD_", ""));
+
+		if (isNaN(index) || !session.missing || !session.missing[index]) {
+			await sendMessage(from, "Запись не найдена. Напишите menu.");
+			return;
+		}
+
+		session.missingRecord = session.missing[index];
+		session.mode = "missing_enter_time_out";
+
+		const row = session.missingRecord.row;
+
+		await sendMessage(from,`Вы выбрали:Оборудование: ${row[2] || ""} Рейс: ${row[0] || ""} Дата: ${row[1] || ""}
+		Начало: ${row[3] || ""}
+		Борт: ${row[6] || ""}
+		Аэропорт: ${row[7] || ""}
+
+		Введите время окончания, например 12:45:`);
+
+		return;
+	}
+
+	if (session.mode === "missing_enter_time_out") {
+		const rowNumber = session.missingRecord.rowNumber;
+
+		await updateCell(rowNumber, 5, text);
+		await recalculateTotalUsage(rowNumber);
+
+		await sendMessage(from, "Время окончания добавлено. Общее время пересчитано.");
+		await goToMainMenu(from);
+		return;
+	}
+	
+	
 
     if (session.mode === "edit_choose_record") {
       const index = Number(text.replace("EDIT_RECORD_", ""));
-      session.editRecord = session.found[index];
 
+      if (isNaN(index) || !session.found || !session.found[index]) {
+        await sendMessage(from, "Запись не найдена. Напишите menu.");
+        return;
+      }
+
+      session.editRecord = session.found[index];
       session.mode = "edit_choose_field";
 
       await sendList(
         from,
         "Что изменить?",
         "Выбрать поле",
-        fields.map((f, i) => ({
+        editableFields.map((f, i) => ({
           id: `EDIT_FIELD_${i}`,
-          title: f.label,
+          title: short(f.label),
         }))
       );
 
@@ -570,7 +854,13 @@ app.post("/webhook", async (req, res) => {
 
     if (session.mode === "edit_choose_field") {
       const fieldIndex = Number(text.replace("EDIT_FIELD_", ""));
-      session.editField = fields[fieldIndex];
+
+      if (isNaN(fieldIndex) || !editableFields[fieldIndex]) {
+        await sendMessage(from, "Поле не найдено. Попробуйте снова или напишите menu.");
+        return;
+      }
+
+      session.editField = editableFields[fieldIndex];
 
       await sendMessage(from, `Введите новое значение: ${session.editField.label}`);
       session.mode = "edit_enter_value";
@@ -581,23 +871,28 @@ app.post("/webhook", async (req, res) => {
       const rowNumber = session.editRecord.rowNumber;
       const columnNumber = getColumnByField(session.editField.key);
 
+      if (!columnNumber) {
+        await sendMessage(from, "Ошибка выбора колонки. Напишите menu.");
+        return;
+      }
+
       await updateCell(rowNumber, columnNumber, text);
 
       if (session.editField.key === "Time in" || session.editField.key === "Time out") {
         await recalculateTotalUsage(rowNumber);
       }
 
-      sessions[from] = { mode: "menu", step: 0, data: {} };
-
       await sendMessage(from, "Запись обновлена.");
-      await showMainMenu(from);
+      await goToMainMenu(from);
       return;
     }
+
+    await showMainMenu(from);
   } catch (error) {
     console.log("ERROR:", error.response?.data || error.message);
   }
 });
 
-app.listen(process.env.PORT, () => {
-  console.log(`Bot started on port ${process.env.PORT}`);
+app.listen(process.env.PORT || 3000, () => {
+  console.log(`Bot started on port ${process.env.PORT || 3000}`);
 });
