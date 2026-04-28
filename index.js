@@ -305,6 +305,23 @@ async function recalculateTotalUsage(sheetName, rowNumber) {
   await updateCell(sheetName, rowNumber, 6, totalUsage);
 }
 
+async function showWelcomeMessage(to) {
+  await sendMessage(
+    to,
+    `Здравствуйте! 👋
+
+Этот бот предназначен для внесения данных по наземному оборудованию в Google Sheet.
+
+Что можно делать:
+1. Внести данные — создать новую запись.
+2. Редактировать — изменить свою последнюю запись.
+3. Дополнить — добавить время окончания, если оно было пропущено.
+
+Для начала нажмите кнопку ниже или напишите:
+menu`
+  );
+}
+
 async function showMainMenu(to) {
   await sendButtons(to, "Главное меню:", [
     { id: "ADD", title: "Внести данные" },
@@ -496,8 +513,9 @@ app.post("/webhook", async (req, res) => {
         currentEquipment: null,
       };
 
-      await showMainMenu(from);
-      return;
+      await showWelcomeMessage(from);
+	  await showMainMenu(from);
+	  return;
     }
 
     const session = sessions[from];
