@@ -171,13 +171,14 @@ async function saveRowsToSheet(baseData, equipmentEntries, createdBy) {
 	baseData["Airport"] || "",                 // H
 	baseData["Engineer Name"] || "",           // I
 	"",                                        // J reserved
+	"",
 	createdBy || "",                           // K Created By
 	createdAt,                                  // L Created At
 	]);
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    range: `'${sheetName}'!A:L`,
+    range: `'${sheetName}'!A:M`,
     valueInputOption: "USER_ENTERED",
     requestBody: { values: rows },
   });
@@ -209,9 +210,9 @@ async function getLast10Rows(createdBy) {
       const row = item.rows[i];
 
       // L column = WhatsApp number of creator
-      if (row[10] !== createdBy) continue;
+      if (row[11] !== createdBy) continue;
 	  // M column = created date/time
-	  const createdAt = row[11] ? new Date(row[11]) : parseDateTime(row[1], row[3]);
+	  const createdAt = row[12] ? new Date(row[12]) : parseDateTime(row[1], row[3]);
 
       found.push({
         sheetName: item.sheetName,
@@ -566,18 +567,31 @@ app.post("/webhook", async (req, res) => {
     if (!text) return;
 
     if (!sessions[from]) {
-      sessions[from] = {
-        mode: "menu",
-        step: 0,
-        baseData: {},
-        equipmentEntries: [],
-        currentEquipment: null,
-      };
+    sessions[from] = {
+		mode: "menu",
+		step: 0,
+		baseData: {},
+		equipmentEntries: [],
+		currentEquipment: null,
+	};
 
-      await showWelcomeMessage(from);
-      await showMainMenu(from);
-      return;
-    }
+	await showWelcomeMessage(from);
+
+	if (
+    text.toLowerCase() === "menu" ||
+    text.toLowerCase() === "меню" ||
+    text.toLowerCase() === "start" ||
+    text.toLowerCase() === "старт"
+	) {
+		await showMainMenu(from);
+		return;
+  }
+
+  // не делаем return, чтобы первое нажатие ADD/EDIT/FILL_MISSING обработалось ниже
+	}
+
+  // не делаем return, чтобы первое нажатие ADD/EDIT/FILL_MISSING обработалось ниже
+}
 
     const session = sessions[from];
 
