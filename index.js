@@ -56,8 +56,8 @@ const flightList = [
 // WhatsApp number -> Engineer name
 // Укажите реальные номера без знака +
 const engineerByPhone = {
-  "971000000000": "Engineer 1",
-  "971111111111": "Engineer 2",
+  "79191534499": "Badrutdinov Ernest",
+  "99364027397": "Yoldashov Rustam",
 };
 
 function getEngineerNameByPhone(phone) {
@@ -69,6 +69,7 @@ const baseFields = [
   { key: "Date", label: "Дата" },
   { key: "Aircraft", label: "Самолёт" },
   { key: "Airport", label: "Аэропорт" },
+  { key: "Engineer Name", label: "Имя и фамилия инженера" },
 ];
 
 const editableFields = [
@@ -77,9 +78,9 @@ const editableFields = [
   { key: "Equipment / Company", label: "Оборудование", col: 3 },
   { key: "Time in", label: "Время начала", col: 4 },
   { key: "Time out", label: "Время окончания", col: 5 },
-  { key: "Aircraft", label: "Самолёт", col: 8 },
-  { key: "Airport", label: "Аэропорт", col: 9 },
-  { key: "Engineer Name", label: "Инженер", col: 10 },
+  { key: "Aircraft", label: "Самолёт", col: 7 },
+  { key: "Airport", label: "Аэропорт", col: 8 },
+  { key: "Engineer Name", label: "Инженер", col: 9 },
 ];
 
 // =====================
@@ -160,24 +161,23 @@ async function saveRowsToSheet(baseData, equipmentEntries, createdBy) {
   const createdAt = new Date().toISOString();
 
   const rows = equipmentEntries.map((item) => [
-    baseData["Flight"] || "",                  // A
-    baseData["Date"] || "",                    // B
-    item.equipment || "",                      // C
-    item.timeIn || "",                         // D
-    item.timeOut || "",                        // E
-    calculateUsage(item.timeIn, item.timeOut),  // F
-    "",                                        // G reserved
-    baseData["Aircraft"] || "",                // H
-    baseData["Airport"] || "",                 // I
-    baseData["Engineer Name"] || "",           // J
-    "",                                        // K reserved
-    createdBy || "",                           // L Created By
-    createdAt,                                 // M Created At
-  ]);
+	baseData["Flight"] || "",                  // A
+	baseData["Date"] || "",                    // B
+	item.equipment || "",                      // C
+	item.timeIn || "",                         // D
+	item.timeOut || "",                        // E
+	calculateUsage(item.timeIn, item.timeOut),  // F
+	baseData["Aircraft"] || "",                // G
+	baseData["Airport"] || "",                 // H
+	baseData["Engineer Name"] || "",           // I
+	"",                                        // J reserved
+	createdBy || "",                           // K Created By
+	createdAt,                                  // L Created At
+	]);
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    range: `'${sheetName}'!A:M`,
+    range: `'${sheetName}'!A:L`,
     valueInputOption: "USER_ENTERED",
     requestBody: { values: rows },
   });
@@ -209,10 +209,9 @@ async function getLast10Rows(createdBy) {
       const row = item.rows[i];
 
       // L column = WhatsApp number of creator
-      if (row[11] !== createdBy) continue;
-
-      // M column = created date/time
-      const createdAt = row[12] ? new Date(row[12]) : parseDateTime(row[1], row[3]);
+      if (row[10] !== createdBy) continue;
+	  // M column = created date/time
+	  const createdAt = row[11] ? new Date(row[11]) : parseDateTime(row[1], row[3]);
 
       found.push({
         sheetName: item.sheetName,
@@ -427,6 +426,11 @@ async function askBaseField(to, session) {
     await sendList(to, "Выберите аэропорт:", "Выбрать", rows);
     return;
   }
+  
+  if (field.key === "Engineer Name") {
+	await sendMessage(to, "Введите имя и фамилию инженера:");
+	return;
+  }
 
   await sendMessage(to, `Введите: ${field.label}`);
 }
@@ -490,7 +494,7 @@ async function finishBaseFlow(from, session) {
     return;
   }
 
-  session.baseData["Engineer Name"] = getEngineerNameByPhone(from);
+  //session.baseData["Engineer Name"] = getEngineerNameByPhone(from);
 
   session.mode = "equipment_choose";
   await askEquipment(from, session);
