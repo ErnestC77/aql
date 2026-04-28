@@ -8,7 +8,29 @@ const app = express();
 app.use(express.json());
 
 const sessions = {};
-const SHEET_NAME = "Sheet1";
+
+// Самолёт -> вкладка Google Sheet
+const aircraftSheetMap = {
+  "ER-BAS": "B747F",
+  "ER-BYK": "B747F",
+
+  "ER-GAG": "B777-B747PAX",
+  "ER-JAN": "B777-B747PAX",
+  "ER-HAJ": "B777-B747PAX",
+  "ER-BOY": "B777-B747PAX",
+  "ER-BOS": "B777-B747PAX",
+
+  "ER-UFC": "B733F",
+  "ER-BCT": "B733F",
+  "P4-AQQ": "B733F",
+};
+
+const DEFAULT_SHEET_NAME = "Sheet1";
+const ALL_SHEET_NAMES = [...new Set(Object.values(aircraftSheetMap))];
+
+function getSheetNameByAircraft(aircraft) {
+  return aircraftSheetMap[aircraft] || DEFAULT_SHEET_NAME;
+}
 
 const aircraftList = [
   "ER-BAS", "ER-BYK", "ER-GAG", "ER-JAN", "ER-HAJ",
@@ -202,6 +224,7 @@ function extractIncomingText(message) {
 
 async function saveRowsToSheet(baseData, equipmentEntries) {
   const sheets = await getSheetsClient();
+  const sheetName = getSheetNameByAircraft(baseData["Aircraft"]);
 
   const rows = equipmentEntries.map((item) => [
     baseData["Flight"] || "",
@@ -217,70 +240,74 @@ async function saveRowsToSheet(baseData, equipmentEntries) {
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    range: `'${SHEET_NAME}'!A:I`,
+    range: `'${sheetName}'!A:I`,
     valueInputOption: "USER_ENTERED",
     requestBody: { values: rows },
   });
 }
 
-async function getAllRows() {
+async function getAllRowsFromSheet(sheetName) {
   const sheets = await getSheetsClient();
 
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    range: `'${SHEET_NAME}'!A:I`,
+    range: `'${sheetName}'!A:I`,
   });
 
   return res.data.values || [];
 }
 
 async function getRowsLast24Hours() {
-  const rows = await getAllRows();
   const now = new Date();
   const last24 = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-
   const found = [];
 
-  for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    const rowDate = parseDateTime(row[1], row[3]);
+  for (const sheetName of ALL_SHEET_NAMES) {
+    const rows = await getAllRowsFromSheet(sheetName);
 
-    if (rowDate && rowDate >= last24 && rowDate <= now) {
-      found.push({
-        rowNumber: i + 1,
-        row,
-      });
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const rowDate = parseDateTime(row[1], row[3]);
+
+      if (rowDate && rowDate >= last24 && rowDate <= now) {
+        found.push({
+          sheetName,
+          rowNumber: i + 1,
+          row,
+          rowDate,
+        });
+      }
     }
   }
 
-  return found.reverse();
+  return found.sort((a, b) => b.rowDate - a.rowDate);
 }
 
-async function updateCell(rowNumber, columnNumber, value) {
+async function updateCell(sheetName, rowNumber, columnNumber, value) {
   const sheets = await getSheetsClient();
   const columnLetter = String.fromCharCode(64 + columnNumber);
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    range: `'${SHEET_NAME}'!${columnLetter}${rowNumber}`,
+    range: `'${sheetName}'!${columnLetter}${rowNumber}`,
     valueInputOption: "USER_ENTERED",
     requestBody: { values: [[value]] },
   });
 }
 
-async function recalculateTotalUsage(rowNumber) {
-  const rows = await getAllRows();
+async function recalculateTotalUsage(sheetName, rowNumber) {
+  const rows = await getAllRowsFromSheet(sheetName);
   const row = rows[rowNumber - 1];
 
   const totalUsage = calculateUsage(row[3], row[4]);
-  await updateCell(rowNumber, 6, totalUsage);
+  await updateCell(sheetName, rowNumber, 6, totalUsage);
 }
 
 async function showMainMenu(to) {
   await sendButtons(to, "Главное меню:", [
     { id: "ADD", title: "Внести данные" },
     { id: "EDIT", title: "Редактировать" },
-	{ id: "FILL_MISSING", title: "Дополнить" },
+    { id: "FILL_MISSING", title: "Дополнить" },
   ]);
 }
 
@@ -333,7 +360,6 @@ async function askBaseField(to, session) {
 
 async function askEquipment(to, session) {
   const selected = (session.equipmentEntries || []).map((item) => item.equipment);
-
   const available = equipmentList.filter((e) => !selected.includes(e));
 
   if (available.length === 0) {
@@ -379,6 +405,7 @@ function buildPreview(baseData, equipmentEntries) {
 Самолёт: ${baseData["Aircraft"] || ""}
 Аэропорт: ${baseData["Airport"] || ""}
 Имя инженера: ${baseData["Engineer Name"] || ""}
+Вкладка: ${getSheetNameByAircraft(baseData["Aircraft"])}
 
 Оборудование:
 ${equipmentText}`;
@@ -416,7 +443,7 @@ async function showMissingRecords(from, session) {
 
   const missing = rows.filter((item) => {
     const row = item.row;
-    return row[3] && !row[4]; // есть время начала, но нет времени окончания
+    return row[3] && !row[4];
   });
 
   if (missing.length === 0) {
@@ -431,7 +458,7 @@ async function showMissingRecords(from, session) {
   const listRows = missing.slice(0, 10).map((item, index) => ({
     id: `MISSING_RECORD_${index}`,
     title: short(`${item.row[2]} ${item.row[3]}`, 24),
-    description: short(`Рейс: ${item.row[0] || ""} | ${item.row[6] || ""} | ${item.row[7] || ""} | ${item.row[8] || ""}`, 72),
+    description: short(`${item.sheetName} | Рейс: ${item.row[0] || ""} | ${item.row[6] || ""} | ${item.row[7] || ""} | ${item.row[8] || ""}`, 72),
   }));
 
   await sendList(
@@ -467,10 +494,11 @@ app.post("/webhook", async (req, res) => {
     }
 
     const session = sessions[from];
-	if (text === "FILL_MISSING") {
-		await showMissingRecords(from, session);
-		return;
-	}
+
+    if (text === "FILL_MISSING") {
+      await showMissingRecords(from, session);
+      return;
+    }
 
     if (
       text === "MAIN_MENU" ||
@@ -494,33 +522,6 @@ app.post("/webhook", async (req, res) => {
         await askBaseField(from, session);
         return;
       }
-	  
-	  if (text === "FILL_MISSING") {
-		const rows = await getRowsLast24Hours();
-
-		const missing = rows.filter((item) => {
-		const row = item.row;
-		return row[3] && !row[4]; // есть Time in, но нет Time out
-		});
-
-		if (missing.length === 0) {
-			await sendMessage(from, "Незаполненных записей за последние 24 часа нет.");
-			await showMainMenu(from);
-			return;
-			}
-
-		session.mode = "missing_choose_record";
-		session.missing = missing;
-
-		const listRows = missing.slice(0, 10).map((item, index) => ({
-		id: `MISSING_RECORD_${index}`,
-		title: short(`${item.row[0]} ${item.row[2]}`, 24),
-		description: `${item.row[3] || ""} | ${item.row[6] || ""} | ${item.row[7] || ""}`,
-		}));
-
-		await sendList(from, "Выберите запись без окончания:", "Выбрать", listRows);
-		return;
-	}
 
       if (text === "EDIT") {
         const found = await getRowsLast24Hours();
@@ -537,7 +538,7 @@ app.post("/webhook", async (req, res) => {
         const listRows = found.slice(0, 10).map((item, index) => ({
           id: `EDIT_RECORD_${index}`,
           title: short(`${item.row[0]} ${item.row[2]}`, 24),
-          description: short(`${item.row[3] || ""}-${item.row[4] || "не окончено"} | ${item.row[6] || ""} | ${item.row[7] || ""} | ${item.row[8] || ""}`, 72),
+          description: short(`${item.sheetName} | ${item.row[3] || ""}-${item.row[4] || "не окончено"} | ${item.row[6] || ""} | ${item.row[7] || ""} | ${item.row[8] || ""}`, 72),
         }));
 
         await sendList(from, "Записи за последние 24 часа:", "Выбрать", listRows);
@@ -551,20 +552,20 @@ app.post("/webhook", async (req, res) => {
     if (session.mode === "base") {
       const field = baseFields[session.step];
 
-	  if (text.startsWith("FLIGHT_")) {
-		const flight = text.replace("FLIGHT_", "");
+      if (text.startsWith("FLIGHT_")) {
+        const flight = text.replace("FLIGHT_", "");
 
-		if (flight === "MANUAL") {
-			session.mode = "base_manual_flight";
-			await sendMessage(from, "Введите номер рейса вручную:");
-			return;
-		}
+        if (flight === "MANUAL") {
+          session.mode = "base_manual_flight";
+          await sendMessage(from, "Введите номер рейса вручную:");
+          return;
+        }
 
-		session.baseData["Flight"] = flight;
-		session.step++;
-		await finishBaseFlow(from, session);
-		return;
-	}
+        session.baseData["Flight"] = flight;
+        session.step++;
+        await finishBaseFlow(from, session);
+        return;
+      }
 
       if (text === "DATE_TODAY") {
         session.baseData["Date"] = todayDate();
@@ -584,20 +585,18 @@ app.post("/webhook", async (req, res) => {
         }
 
         session.baseData["Airport"] = airport;
-      } 
-	  else if (field.key === "CombinedInfo") {
-		const parts = text.split(",").map((x) => x.trim());
+      } else if (field.key === "CombinedInfo") {
+        const parts = text.split(",").map((x) => x.trim());
 
-		if (parts.length < 3) {
-			await sendMessage(from,"Введите в формате:\nСамолёт, Аэропорт, Инженер\n\nПример:\nER-BAS, SHJ, Ernest");
-			return;
-		}
+        if (parts.length < 3) {
+          await sendMessage(from, "Введите в формате:\nСамолёт, Аэропорт, Инженер\n\nПример:\nER-BAS, SHJ, Ernest");
+          return;
+        }
 
-		session.baseData["Aircraft"] = parts[0].toUpperCase();
-		session.baseData["Airport"] = parts[1].toUpperCase();
-		session.baseData["Engineer Name"] = parts.slice(2).join(" ");
-	  }
-	  else {
+        session.baseData["Aircraft"] = parts[0].toUpperCase();
+        session.baseData["Airport"] = parts[1].toUpperCase();
+        session.baseData["Engineer Name"] = parts.slice(2).join(" ");
+      } else {
         session.baseData[field.key] = text;
       }
 
@@ -605,14 +604,14 @@ app.post("/webhook", async (req, res) => {
       await finishBaseFlow(from, session);
       return;
     }
-	
-	if (session.mode === "base_manual_flight") {
-		session.baseData["Flight"] = text.toUpperCase();
-		session.mode = "base";
-		session.step++;
-		await finishBaseFlow(from, session);
-		return;
-	}
+
+    if (session.mode === "base_manual_flight") {
+      session.baseData["Flight"] = text.toUpperCase();
+      session.mode = "base";
+      session.step++;
+      await finishBaseFlow(from, session);
+      return;
+    }
 
     if (session.mode === "base_manual_date") {
       session.baseData["Date"] = text;
@@ -755,28 +754,28 @@ app.post("/webhook", async (req, res) => {
 
     if (session.mode === "confirm") {
       if (text === "SAVE_YES") {
-		if (!session.equipmentEntries || session.equipmentEntries.length === 0) {
-			await sendMessage(from, "Нет оборудования для сохранения.");
-			await goToMainMenu(from);
-			return;
-		}
+        if (!session.equipmentEntries || session.equipmentEntries.length === 0) {
+          await sendMessage(from, "Нет оборудования для сохранения.");
+          await goToMainMenu(from);
+          return;
+        }
 
-		const hasMissingTimeOut = session.equipmentEntries.some((item) => !item.timeOut);
+        const hasMissingTimeOut = session.equipmentEntries.some((item) => !item.timeOut);
 
-		await saveRowsToSheet(session.baseData, session.equipmentEntries);
-		await sendMessage(from, "Данные сохранены в Google таблицу.");
+        await saveRowsToSheet(session.baseData, session.equipmentEntries);
+        await sendMessage(from, `Данные сохранены в Google таблицу, вкладка: ${getSheetNameByAircraft(session.baseData["Aircraft"])}.`);
 
-		if (hasMissingTimeOut) {
-			await sendButtons(from, "Есть незаполненное время окончания.", [
-			{ id: "FILL_MISSING", title: "Ввести данные" },
-			{ id: "MAIN_MENU", title: "Главное меню" },
-			]);
-			return;
-		}
+        if (hasMissingTimeOut) {
+          await sendButtons(from, "Есть незаполненное время окончания.", [
+            { id: "FILL_MISSING", title: "Ввести данные" },
+            { id: "MAIN_MENU", title: "Главное меню" },
+          ]);
+          return;
+        }
 
-		await goToMainMenu(from);
-		return;
-	}
+        await goToMainMenu(from);
+        return;
+      }
 
       if (text === "SAVE_NO") {
         await sendMessage(from, "Запись отменена.");
@@ -791,42 +790,45 @@ app.post("/webhook", async (req, res) => {
       ]);
       return;
     }
-	
-	if (session.mode === "missing_choose_record") {
-		const index = Number(text.replace("MISSING_RECORD_", ""));
 
-		if (isNaN(index) || !session.missing || !session.missing[index]) {
-			await sendMessage(from, "Запись не найдена. Напишите menu.");
-			return;
-		}
+    if (session.mode === "missing_choose_record") {
+      const index = Number(text.replace("MISSING_RECORD_", ""));
 
-		session.missingRecord = session.missing[index];
-		session.mode = "missing_enter_time_out";
+      if (isNaN(index) || !session.missing || !session.missing[index]) {
+        await sendMessage(from, "Запись не найдена. Напишите menu.");
+        return;
+      }
 
-		const row = session.missingRecord.row;
+      session.missingRecord = session.missing[index];
+      session.mode = "missing_enter_time_out";
 
-		await sendMessage(from,`Вы выбрали:Оборудование: ${row[2] || ""} Рейс: ${row[0] || ""} Дата: ${row[1] || ""}
-		Начало: ${row[3] || ""}
-		Борт: ${row[6] || ""}
-		Аэропорт: ${row[7] || ""}
+      const row = session.missingRecord.row;
 
-		Введите время окончания, например 12:45:`);
+      await sendMessage(from, `Вы выбрали:
+Вкладка: ${session.missingRecord.sheetName}
+Оборудование: ${row[2] || ""}
+Рейс: ${row[0] || ""}
+Дата: ${row[1] || ""}
+Начало: ${row[3] || ""}
+Борт: ${row[6] || ""}
+Аэропорт: ${row[7] || ""}
 
-		return;
-	}
+Введите время окончания, например 12:45:`);
 
-	if (session.mode === "missing_enter_time_out") {
-		const rowNumber = session.missingRecord.rowNumber;
+      return;
+    }
 
-		await updateCell(rowNumber, 5, text);
-		await recalculateTotalUsage(rowNumber);
+    if (session.mode === "missing_enter_time_out") {
+      const sheetName = session.missingRecord.sheetName;
+      const rowNumber = session.missingRecord.rowNumber;
 
-		await sendMessage(from, "Время окончания добавлено. Общее время пересчитано.");
-		await goToMainMenu(from);
-		return;
-	}
-	
-	
+      await updateCell(sheetName, rowNumber, 5, text);
+      await recalculateTotalUsage(sheetName, rowNumber);
+
+      await sendMessage(from, "Время окончания добавлено. Общее время пересчитано.");
+      await goToMainMenu(from);
+      return;
+    }
 
     if (session.mode === "edit_choose_record") {
       const index = Number(text.replace("EDIT_RECORD_", ""));
@@ -841,7 +843,7 @@ app.post("/webhook", async (req, res) => {
 
       await sendList(
         from,
-        "Что изменить?",
+        `Что изменить?\nВкладка: ${session.editRecord.sheetName}`,
         "Выбрать поле",
         editableFields.map((f, i) => ({
           id: `EDIT_FIELD_${i}`,
@@ -868,6 +870,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     if (session.mode === "edit_enter_value") {
+      const sheetName = session.editRecord.sheetName;
       const rowNumber = session.editRecord.rowNumber;
       const columnNumber = getColumnByField(session.editField.key);
 
@@ -876,10 +879,10 @@ app.post("/webhook", async (req, res) => {
         return;
       }
 
-      await updateCell(rowNumber, columnNumber, text);
+      await updateCell(sheetName, rowNumber, columnNumber, text);
 
       if (session.editField.key === "Time in" || session.editField.key === "Time out") {
-        await recalculateTotalUsage(rowNumber);
+        await recalculateTotalUsage(sheetName, rowNumber);
       }
 
       await sendMessage(from, "Запись обновлена.");
