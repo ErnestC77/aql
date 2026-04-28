@@ -9,7 +9,9 @@ app.use(express.json());
 
 const sessions = {};
 
-// Самолёт -> вкладка Google Sheet
+// =====================
+// Google Sheet tabs
+// =====================
 const aircraftSheetMap = {
   "ER-BAS": "B747F",
   "ER-BYK": "B747F",
@@ -32,6 +34,9 @@ function getSheetNameByAircraft(aircraft) {
   return aircraftSheetMap[aircraft] || DEFAULT_SHEET_NAME;
 }
 
+// =====================
+// Lists
+// =====================
 const aircraftList = [
   "ER-BAS", "ER-BYK", "ER-GAG", "ER-JAN", "ER-HAJ",
   "ER-BOY", "ER-BOS", "ER-UFC", "ER-BCT", "P4-AQQ"
@@ -43,8 +48,13 @@ const equipmentList = [
   "PAXSTEP", "GPU", "SCISSORLIFT", "NITROGEN", "JACK", "DOLLY"
 ];
 
+const flightList = [
+  "TVR4701", "TVR4702", "TVR4703", "TVR4704",
+  "TVR4707", "TVR4716", "TVR4717"
+];
+
 // WhatsApp number -> Engineer name
-// Replace numbers with real WhatsApp numbers without + sign.
+// Укажите реальные номера без знака +
 const engineerByPhone = {
   "971000000000": "Engineer 1",
   "971111111111": "Engineer 2",
@@ -53,11 +63,6 @@ const engineerByPhone = {
 function getEngineerNameByPhone(phone) {
   return engineerByPhone[phone] || phone;
 }
-
-const flightList = [
-  "TVR4701", "TVR4702", "TVR4703", "TVR4704",
-  "TVR4707", "TVR4716", "TVR4717"
-];
 
 const baseFields = [
   { key: "Flight", label: "Номер рейса" },
@@ -77,20 +82,12 @@ const editableFields = [
   { key: "Engineer Name", label: "Инженер", col: 10 },
 ];
 
+// =====================
+// Helpers
+// =====================
 function short(text, max = 24) {
   if (!text) return "";
   return text.length > max ? text.substring(0, max - 3) + "..." : text;
-}
-
-async function getSheetsClient() {
-  const auth = new google.auth.JWT({
-    email: process.env.GOOGLE_CLIENT_EMAIL,
-    key: process.env.GOOGLE_PRIVATE_KEY.replace(/\n/g, "
-"),
-    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-  });
-
-  return google.sheets({ version: "v4", auth });
 }
 
 function todayDate() {
@@ -128,6 +125,132 @@ function parseDateTime(dateText, timeText) {
   return new Date(year, month - 1, day, hour, minute);
 }
 
+function extractIncomingText(message) {
+  if (message.type === "text") return message.text.body.trim();
+
+  if (message.type === "interactive") {
+    if (message.interactive.type === "button_reply") {
+      return message.interactive.button_reply.id;
+    }
+
+    if (message.interactive.type === "list_reply") {
+      return message.interactive.list_reply.id;
+    }
+  }
+
+  return "";
+}
+
+// =====================
+// Google Sheets
+// =====================
+async function getSheetsClient() {
+  const auth = new google.auth.JWT({
+    email: process.env.GOOGLE_CLIENT_EMAIL,
+    key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  });
+
+  return google.sheets({ version: "v4", auth });
+}
+
+async function saveRowsToSheet(baseData, equipmentEntries, createdBy) {
+  const sheets = await getSheetsClient();
+  const sheetName = getSheetNameByAircraft(baseData["Aircraft"]);
+  const createdAt = new Date().toISOString();
+
+  const rows = equipmentEntries.map((item) => [
+    baseData["Flight"] || "",                  // A
+    baseData["Date"] || "",                    // B
+    item.equipment || "",                      // C
+    item.timeIn || "",                         // D
+    item.timeOut || "",                        // E
+    calculateUsage(item.timeIn, item.timeOut),  // F
+    "",                                        // G reserved
+    baseData["Aircraft"] || "",                // H
+    baseData["Airport"] || "",                 // I
+    baseData["Engineer Name"] || "",           // J
+    "",                                        // K reserved
+    createdBy || "",                           // L Created By
+    createdAt,                                 // M Created At
+  ]);
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: process.env.GOOGLE_SHEET_ID,
+    range: `'${sheetName}'!A:M`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: rows },
+  });
+}
+
+async function getAllRowsFromSheet(sheetName) {
+  const sheets = await getSheetsClient();
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: process.env.GOOGLE_SHEET_ID,
+    range: `'${sheetName}'!A:M`,
+  });
+
+  return res.data.values || [];
+}
+
+async function getLast10Rows(createdBy) {
+  const results = await Promise.all(
+    ALL_SHEET_NAMES.map(async (sheetName) => {
+      const rows = await getAllRowsFromSheet(sheetName);
+      return { sheetName, rows };
+    })
+  );
+
+  const found = [];
+
+  for (const item of results) {
+    for (let i = 1; i < item.rows.length; i++) {
+      const row = item.rows[i];
+
+      // L column = WhatsApp number of creator
+      if (row[11] !== createdBy) continue;
+
+      // M column = created date/time
+      const createdAt = row[12] ? new Date(row[12]) : parseDateTime(row[1], row[3]);
+
+      found.push({
+        sheetName: item.sheetName,
+        rowNumber: i + 1,
+        row,
+        createdAt: createdAt || new Date(0),
+      });
+    }
+  }
+
+  return found
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, 10);
+}
+
+async function updateCell(sheetName, rowNumber, columnNumber, value) {
+  const sheets = await getSheetsClient();
+  const columnLetter = String.fromCharCode(64 + columnNumber);
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: process.env.GOOGLE_SHEET_ID,
+    range: `'${sheetName}'!${columnLetter}${rowNumber}`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [[value]] },
+  });
+}
+
+async function recalculateTotalUsage(sheetName, rowNumber) {
+  const rows = await getAllRowsFromSheet(sheetName);
+  const row = rows[rowNumber - 1];
+
+  const totalUsage = calculateUsage(row[3], row[4]);
+  await updateCell(sheetName, rowNumber, 6, totalUsage);
+}
+
+// =====================
+// WhatsApp sending
+// =====================
 async function sendMessage(to, text) {
   const token = process.env.WHATSAPP_TOKEN.trim();
   const phoneNumberId = process.env.PHONE_NUMBER_ID.trim();
@@ -219,109 +342,23 @@ async function sendList(to, body, buttonText, rows) {
   );
 }
 
-function extractIncomingText(message) {
-  if (message.type === "text") return message.text.body.trim();
+// =====================
+// UI
+// =====================
+async function showWelcomeMessage(to) {
+  await sendMessage(
+    to,
+    `Здравствуйте! 👋
 
-  if (message.type === "interactive") {
-    if (message.interactive.type === "button_reply") {
-      return message.interactive.button_reply.id;
-    }
+Этот бот предназначен для внесения данных по наземному оборудованию в Google Sheet.
 
-    if (message.interactive.type === "list_reply") {
-      return message.interactive.list_reply.id;
-    }
-  }
+Что можно делать:
+1. Внести данные — создать новую запись.
+2. Редактировать — изменить свою последнюю запись.
+3. Дополнить — добавить время окончания, если оно было пропущено.
 
-  return "";
-}
-
-async function saveRowsToSheet(baseData, equipmentEntries, createdBy) {
-  const sheets = await getSheetsClient();
-  const sheetName = getSheetNameByAircraft(baseData["Aircraft"]);
-  const createdAt = new Date().toISOString();
-
-  const rows = equipmentEntries.map((item) => [
-    baseData["Flight"] || "",                 // A
-    baseData["Date"] || "",                   // B
-    item.equipment || "",                     // C
-    item.timeIn || "",                        // D
-    item.timeOut || "",                       // E
-    calculateUsage(item.timeIn, item.timeOut), // F
-    "",                                       // G reserved
-    baseData["Aircraft"] || "",               // H
-    baseData["Airport"] || "",                // I
-    baseData["Engineer Name"] || "",          // J
-    "",                                       // K reserved
-    createdBy || "",                          // L Created By
-    createdAt,                                // M Created At
-  ]);
-
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    range: `'${sheetName}'!A:M`,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: rows },
-  });
-}
-
-async function getAllRowsFromSheet(sheetName) {
-  const sheets = await getSheetsClient();
-
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    range: `'${sheetName}'!A:M`,
-  });
-
-  return res.data.values || [];
-}
-
-async function getLast10Rows(createdBy) {
-  const found = [];
-
-  for (const sheetName of ALL_SHEET_NAMES) {
-    const rows = await getAllRowsFromSheet(sheetName);
-
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-
-      // L column = WhatsApp number of creator
-      if (row[11] !== createdBy) continue;
-
-      // M column = created date/time
-      const createdAt = row[12] ? new Date(row[12]) : parseDateTime(row[1], row[3]);
-
-      found.push({
-        sheetName,
-        rowNumber: i + 1,
-        row,
-        createdAt: createdAt || new Date(0),
-      });
-    }
-  }
-
-  return found
-    .sort((a, b) => b.createdAt - a.createdAt)
-    .slice(0, 10);
-}
-
-async function updateCell(sheetName, rowNumber, columnNumber, value) {
-  const sheets = await getSheetsClient();
-  const columnLetter = String.fromCharCode(64 + columnNumber);
-
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    range: `'${sheetName}'!${columnLetter}${rowNumber}`,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: [[value]] },
-  });
-}
-
-async function recalculateTotalUsage(sheetName, rowNumber) {
-  const rows = await getAllRowsFromSheet(sheetName);
-  const row = rows[rowNumber - 1];
-
-  const totalUsage = calculateUsage(row[3], row[4]);
-  await updateCell(sheetName, rowNumber, 6, totalUsage);
+Для возврата в меню в любой момент напишите: menu`
+  );
 }
 
 async function showMainMenu(to) {
@@ -466,6 +503,9 @@ function getColumnByField(fieldKey) {
   return item?.col;
 }
 
+// =====================
+// Webhook verify
+// =====================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -509,6 +549,9 @@ async function showMissingRecords(from, session) {
   );
 }
 
+// =====================
+// Main webhook
+// =====================
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
@@ -529,6 +572,7 @@ app.post("/webhook", async (req, res) => {
         currentEquipment: null,
       };
 
+      await showWelcomeMessage(from);
       await showMainMenu(from);
       return;
     }
