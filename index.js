@@ -643,22 +643,18 @@ app.post("/webhook", async (req, res) => {
 
     // Initialize session if needed
     if (!sessions[from]) {
-      sessions[from] = {
-        mode: "menu",
-        step: 0,
-        baseData: {},
-        equipmentEntries: [],
-        currentEquipment: null,
-      };
+  sessions[from] = {
+    mode: "menu",
+    step: 0,
+    baseData: {},
+    equipmentEntries: [],
+    currentEquipment: null,
+  };
 
-      await showWelcomeMessage(from);
-
-      // Check for menu command on first message
-      if (isCommandKeyword(text)) {
-        await showMainMenu(from);
-      }
-      return;
-    }
+  await showWelcomeMessage(from);
+  await showMainMenu(from);
+  return;
+}
 
     const session = sessions[from];
 
