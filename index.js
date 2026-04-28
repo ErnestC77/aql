@@ -47,7 +47,7 @@ const aircraftList = [
   "ER-BOY", "ER-BOS", "ER-UFC", "ER-BCT", "P4-AQQ"
 ];
 
-const airportList = ["DWC", "HKG", "SHJ", "AUH", "FJR", "SYD"];
+const airportList = ["DWC", "HKG", "SHJ", "AUH", "FJR", "SYD", "JED", "MED", "KGF"];
 
 const equipmentList = [
   "PAXSTEP", "GPU", "SCISSORLIFT", "NITROGEN", "JACK", "DOLLY"
@@ -55,7 +55,7 @@ const equipmentList = [
 
 const flightList = [
   "TVR4701", "TVR4702", "TVR4703", "TVR4704",
-  "TVR4707", "TVR4716", "TVR4717"
+  "TVR4707", "TVR4716", "TVR4717", "Maintenance"
 ];
 
 // Pre-mapped lists to reduce runtime processing
@@ -1069,7 +1069,9 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    await showMainMenu(from);
+    // ✅ Proper error handling - don't break the flow
+    console.warn(`Unexpected input in mode "${session.mode}": "${text}"`);
+    await sendMessage(from, "Не понимаю. Напишите 'menu' для возврата в главное меню.");
   } catch (error) {
     console.error("ERROR:", error.response?.data || error.message);
   }
