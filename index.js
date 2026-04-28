@@ -53,8 +53,6 @@ const flightList = [
   "TVR4707", "TVR4716", "TVR4717"
 ];
 
-// WhatsApp number -> Engineer name
-// Укажите реальные номера без знака +
 const engineerByPhone = {
   "79191534499": "Badrutdinov Ernest",
   "99364027397": "Yoldashov Rustam",
@@ -146,9 +144,13 @@ function extractIncomingText(message) {
 // Google Sheets
 // =====================
 async function getSheetsClient() {
+  const privateKey = process.env.GOOGLE_PRIVATE_KEY
+    ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n")
+    : "";
+
   const auth = new google.auth.JWT({
     email: process.env.GOOGLE_CLIENT_EMAIL,
-    key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+    key: privateKey,
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
 
@@ -161,20 +163,20 @@ async function saveRowsToSheet(baseData, equipmentEntries, createdBy) {
   const createdAt = new Date().toISOString();
 
   const rows = equipmentEntries.map((item) => [
-	baseData["Flight"] || "",                  // A
-	baseData["Date"] || "",                    // B
-	item.equipment || "",                      // C
-	item.timeIn || "",                         // D
-	item.timeOut || "",                        // E
-	calculateUsage(item.timeIn, item.timeOut),  // F
-	baseData["Aircraft"] || "",                // G
-	baseData["Airport"] || "",                 // H
-	baseData["Engineer Name"] || "",           // I
-	"",                                        // J reserved
-	"",
-	createdBy || "",                           // K Created By
-	createdAt,                                  // L Created At
-	]);
+    baseData["Flight"] || "",                  // A
+    baseData["Date"] || "",                    // B
+    item.equipment || "",                      // C
+    item.timeIn || "",                         // D
+    item.timeOut || "",                        // E
+    calculateUsage(item.timeIn, item.timeOut), // F
+    baseData["Aircraft"] || "",                // G
+    baseData["Airport"] || "",                 // H
+    baseData["Engineer Name"] || "",           // I
+    "",                                        // J reserved
+    "",                                        // K reserved
+    createdBy || "",                           // L Created By
+    createdAt,                                  // M Created At
+  ]);
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
@@ -209,10 +211,11 @@ async function getLast10Rows(createdBy) {
     for (let i = 1; i < item.rows.length; i++) {
       const row = item.rows[i];
 
-      // L column = WhatsApp number of creator
+      // L = Created By
       if (row[11] !== createdBy) continue;
-	  // M column = created date/time
-	  const createdAt = row[12] ? new Date(row[12]) : parseDateTime(row[1], row[3]);
+
+      // M = Created At
+      const createdAt = row[12] ? new Date(row[12]) : parseDateTime(row[1], row[3]);
 
       found.push({
         sheetName: item.sheetName,
@@ -427,10 +430,10 @@ async function askBaseField(to, session) {
     await sendList(to, "Выберите аэропорт:", "Выбрать", rows);
     return;
   }
-  
+
   if (field.key === "Engineer Name") {
-	await sendMessage(to, "Введите имя и фамилию инженера:");
-	return;
+    await sendMessage(to, "Введите имя и фамилию инженера:");
+    return;
   }
 
   await sendMessage(to, `Введите: ${field.label}`);
@@ -443,15 +446,19 @@ async function askEquipment(to, session) {
   if (available.length === 0) {
     session.mode = "confirm";
 
-    await sendButtons(to, `${buildPreview(session.baseData, session.equipmentEntries)}
+    await sendButtons(
+      to,
+      `${buildPreview(session.baseData, session.equipmentEntries)}
 
 Все виды оборудования уже выбраны.
 
-Сохранить?`, [
-      { id: "SAVE_YES", title: "Да" },
-      { id: "SAVE_NO", title: "Нет" },
-      { id: "MAIN_MENU", title: "Главное меню" },
-    ]);
+Сохранить?`,
+      [
+        { id: "SAVE_YES", title: "Да" },
+        { id: "SAVE_NO", title: "Нет" },
+        { id: "MAIN_MENU", title: "Главное меню" },
+      ]
+    );
 
     return;
   }
@@ -467,14 +474,16 @@ async function askEquipment(to, session) {
 }
 
 function buildPreview(baseData, equipmentEntries) {
-  const equipmentText = equipmentEntries.map((item, index) => {
-    const total = calculateUsage(item.timeIn, item.timeOut);
+  const equipmentText = equipmentEntries
+    .map((item, index) => {
+      const total = calculateUsage(item.timeIn, item.timeOut);
 
-    return `${index + 1}. ${item.equipment}
+      return `${index + 1}. ${item.equipment}
 Начало: ${item.timeIn || ""}
 Окончание: ${item.timeOut || "не указано"}
 Общее время: ${total || "будет позже"}`;
-  }).join("\n\n");
+    })
+    .join("\n\n");
 
   return `Проверьте данные:
 
@@ -494,8 +503,6 @@ async function finishBaseFlow(from, session) {
     await askBaseField(from, session);
     return;
   }
-
-  //session.baseData["Engineer Name"] = getEngineerNameByPhone(from);
 
   session.mode = "equipment_choose";
   await askEquipment(from, session);
@@ -540,8 +547,11 @@ async function showMissingRecords(from, session) {
 
   const listRows = missing.slice(0, 10).map((item, index) => ({
     id: `MISSING_RECORD_${index}`,
-    title: short(`${item.row[2]} ${item.row[3]}`, 24),
-    description: short(`${item.sheetName} | Рейс: ${item.row[0] || ""} | ${item.row[7] || ""} | ${item.row[8] || ""}`, 72),
+    title: short(`${item.row[2] || ""} ${item.row[3] || ""}`, 24),
+    description: short(
+      `${item.sheetName} | Рейс: ${item.row[0] || ""} | ${item.row[6] || ""} | ${item.row[7] || ""}`,
+      72
+    ),
   }));
 
   await sendList(
@@ -567,35 +577,33 @@ app.post("/webhook", async (req, res) => {
     if (!text) return;
 
     if (!sessions[from]) {
-    sessions[from] = {
-		mode: "menu",
-		step: 0,
-		baseData: {},
-		equipmentEntries: [],
-		currentEquipment: null,
-    };
+      sessions[from] = {
+        mode: "menu",
+        step: 0,
+        baseData: {},
+        equipmentEntries: [],
+        currentEquipment: null,
+      };
 
-    await showWelcomeMessage(from);
+      await showWelcomeMessage(from);
 
-    if (
-    text.toLowerCase() === "menu" ||
-    text.toLowerCase() === "меню" ||
-    text.toLowerCase() === "start" ||
-    text.toLowerCase() === "старт"
-    ) {
-		await showMainMenu(from);
-		return;
+      if (
+        text.toLowerCase() === "menu" ||
+        text.toLowerCase() === "меню" ||
+        text.toLowerCase() === "start" ||
+        text.toLowerCase() === "старт"
+      ) {
+        await showMainMenu(from);
+        return;
+      }
     }
 
-  // не делаем return
-	}
+    const session = sessions[from];
 
-	const session = sessions[from];
-
-	if (text === "FILL_MISSING") {
-	await showMissingRecords(from, session);
-		return;
-	}
+    if (text === "FILL_MISSING") {
+      await showMissingRecords(from, session);
+      return;
+    }
 
     if (
       text === "MAIN_MENU" ||
@@ -634,8 +642,11 @@ app.post("/webhook", async (req, res) => {
 
         const listRows = found.slice(0, 10).map((item, index) => ({
           id: `EDIT_RECORD_${index}`,
-          title: short(`${item.row[0]} ${item.row[2]}`, 24),
-          description: short(`${item.sheetName} | ${item.row[3] || ""}-${item.row[4] || "не окончено"} | ${item.row[7] || ""} | ${item.row[8] || ""}`, 72),
+          title: short(`${item.row[0] || ""} ${item.row[2] || ""}`, 24),
+          description: short(
+            `${item.sheetName} | ${item.row[3] || ""}-${item.row[4] || "не окончено"} | ${item.row[6] || ""} | ${item.row[7] || ""}`,
+            72
+          ),
         }));
 
         await sendList(from, "Последние 10 записей:", "Выбрать", listRows);
@@ -820,13 +831,17 @@ app.post("/webhook", async (req, res) => {
       if (text === "ADD_MORE_NO") {
         session.mode = "confirm";
 
-        await sendButtons(from, `${buildPreview(session.baseData, session.equipmentEntries)}
+        await sendButtons(
+          from,
+          `${buildPreview(session.baseData, session.equipmentEntries)}
 
-Сохранить?`, [
-          { id: "SAVE_YES", title: "Да" },
-          { id: "SAVE_NO", title: "Нет" },
-          { id: "MAIN_MENU", title: "Главное меню" },
-        ]);
+Сохранить?`,
+          [
+            { id: "SAVE_YES", title: "Да" },
+            { id: "SAVE_NO", title: "Нет" },
+            { id: "MAIN_MENU", title: "Главное меню" },
+          ]
+        );
         return;
       }
 
@@ -849,7 +864,10 @@ app.post("/webhook", async (req, res) => {
         const hasMissingTimeOut = session.equipmentEntries.some((item) => !item.timeOut);
 
         await saveRowsToSheet(session.baseData, session.equipmentEntries, from);
-        await sendMessage(from, `Данные сохранены. Вкладка: ${getSheetNameByAircraft(session.baseData["Aircraft"])}.`);
+        await sendMessage(
+          from,
+          `Данные сохранены. Вкладка: ${getSheetNameByAircraft(session.baseData["Aircraft"])}.`
+        );
 
         if (hasMissingTimeOut) {
           await sendButtons(from, "Есть незаполненное время окончания.", [
@@ -890,16 +908,19 @@ app.post("/webhook", async (req, res) => {
 
       const row = session.missingRecord.row;
 
-      await sendMessage(from, `Вы выбрали:
+      await sendMessage(
+        from,
+        `Вы выбрали:
 Вкладка: ${session.missingRecord.sheetName}
 Оборудование: ${row[2] || ""}
 Рейс: ${row[0] || ""}
 Дата: ${row[1] || ""}
 Начало: ${row[3] || ""}
-Борт: ${row[7] || ""}
-Аэропорт: ${row[8] || ""}
+Борт: ${row[6] || ""}
+Аэропорт: ${row[7] || ""}
 
-Введите время окончания, например 12:45:`);
+Введите время окончания, например 12:45:`
+      );
 
       return;
     }
