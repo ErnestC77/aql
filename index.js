@@ -469,9 +469,7 @@ function buildPreview(baseData, equipmentEntries) {
 Начало: ${item.timeIn || ""}
 Окончание: ${item.timeOut || "не указано"}
 Общее время: ${total || "будет позже"}`;
-  }).join("
-
-");
+  }).join("\n\n");
 
   return `Проверьте данные:
 
