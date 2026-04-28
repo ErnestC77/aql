@@ -10,23 +10,18 @@ app.use(express.json());
 const sessions = {};
 
 // =====================
-// Cache & Constants
-// =====================
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-const sheetCache = new Map();
-const commandKeywords = ["menu", "меню", "start", "старт"];
-
-// =====================
 // Google Sheet tabs
 // =====================
 const aircraftSheetMap = {
   "ER-BAS": "B747F",
   "ER-BYK": "B747F",
+
   "ER-GAG": "B777-B747PAX",
   "ER-JAN": "B777-B747PAX",
   "ER-HAJ": "B777-B747PAX",
   "ER-BOY": "B777-B747PAX",
   "ER-BOS": "B777-B747PAX",
+
   "ER-UFC": "B733F",
   "ER-BCT": "B733F",
   "P4-AQQ": "B733F",
@@ -40,14 +35,14 @@ function getSheetNameByAircraft(aircraft) {
 }
 
 // =====================
-// Lists (Pre-mapped)
+// Lists
 // =====================
 const aircraftList = [
   "ER-BAS", "ER-BYK", "ER-GAG", "ER-JAN", "ER-HAJ",
   "ER-BOY", "ER-BOS", "ER-UFC", "ER-BCT", "P4-AQQ"
 ];
 
-const airportList = ["DWC", "HKG", "SHJ", "AUH", "FJR", "SYD", "JED", "MED", "KGF"];
+const airportList = ["DWC", "HKG", "SHJ", "AUH", "FJR", "SYD"];
 
 const equipmentList = [
   "PAXSTEP", "GPU", "SCISSORLIFT", "NITROGEN", "JACK", "DOLLY"
@@ -55,27 +50,9 @@ const equipmentList = [
 
 const flightList = [
   "TVR4701", "TVR4702", "TVR4703", "TVR4704",
-  "TVR4707", "TVR4716", "TVR4717", "Maintenance"
+  "TVR4707", "TVR4716", "TVR4717"
 ];
 
-// Pre-mapped lists to reduce runtime processing
-const flightListMapped = flightList.map((f) => ({
-  id: `FLIGHT_${f}`,
-  title: f,
-}));
-
-const aircraftListMapped = aircraftList.map((a) => ({
-  id: `AIRCRAFT_${a}`,
-  title: a,
-  description: getSheetNameByAircraft(a),
-}));
-
-const airportListMapped = airportList.map((a) => ({
-  id: `AIRPORT_${a}`,
-  title: a,
-}));
-
-// WhatsApp number -> Engineer name
 const engineerByPhone = {
   "79191534499": "Badrutdinov Ernest",
   "99364027397": "Yoldashov Rustam",
@@ -114,10 +91,6 @@ function short(text, max = 24) {
 
 function todayDate() {
   return new Date().toLocaleDateString("ru-RU");
-}
-
-function isCommandKeyword(text) {
-  return commandKeywords.includes(text.toLowerCase());
 }
 
 function calculateUsage(timeIn, timeOut) {
@@ -171,9 +144,13 @@ function extractIncomingText(message) {
 // Google Sheets
 // =====================
 async function getSheetsClient() {
+  const privateKey = process.env.GOOGLE_PRIVATE_KEY
+    ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n")
+    : "";
+
   const auth = new google.auth.JWT({
     email: process.env.GOOGLE_CLIENT_EMAIL,
-    key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+    key: privateKey,
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
 
@@ -181,255 +158,191 @@ async function getSheetsClient() {
 }
 
 async function saveRowsToSheet(baseData, equipmentEntries, createdBy) {
-  try {
-    const sheets = await getSheetsClient();
-    const sheetName = getSheetNameByAircraft(baseData["Aircraft"]);
-    const createdAt = new Date().toISOString();
+  const sheets = await getSheetsClient();
+  const sheetName = getSheetNameByAircraft(baseData["Aircraft"]);
+  const createdAt = new Date().toISOString();
 
-    const rows = equipmentEntries.map((item) => [
-      baseData["Flight"] || "",
-      baseData["Date"] || "",
-      item.equipment || "",
-      item.timeIn || "",
-      item.timeOut || "",
-      calculateUsage(item.timeIn, item.timeOut),
-      baseData["Aircraft"] || "",
-      baseData["Airport"] || "",
-      baseData["Engineer Name"] || "",
-      "",
-      "",
-      createdBy || "",
-      createdAt,
-    ]);
+  const rows = equipmentEntries.map((item) => [
+    baseData["Flight"] || "",                  // A
+    baseData["Date"] || "",                    // B
+    item.equipment || "",                      // C
+    item.timeIn || "",                         // D
+    item.timeOut || "",                        // E
+    calculateUsage(item.timeIn, item.timeOut), // F
+    baseData["Aircraft"] || "",                // G
+    baseData["Airport"] || "",                 // H
+    baseData["Engineer Name"] || "",           // I
+    "",                                        // J reserved
+    "",                                        // K reserved
+    createdBy || "",                           // L Created By
+    createdAt,                                  // M Created At
+  ]);
 
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: process.env.GOOGLE_SHEET_ID,
-      range: `'${sheetName}'!A:M`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: rows },
-    });
-
-    // Invalidate cache after write
-    sheetCache.delete(sheetName);
-  } catch (error) {
-    console.error("Error saving rows to sheet:", error);
-    throw error;
-  }
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: process.env.GOOGLE_SHEET_ID,
+    range: `'${sheetName}'!A:M`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: rows },
+  });
 }
 
 async function getAllRowsFromSheet(sheetName) {
-  try {
-    // Check cache first
-    const cached = sheetCache.get(sheetName);
-    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-      return cached.data;
-    }
+  const sheets = await getSheetsClient();
 
-    const sheets = await getSheetsClient();
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: process.env.GOOGLE_SHEET_ID,
-      range: `'${sheetName}'!A:M`,
-    });
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: process.env.GOOGLE_SHEET_ID,
+    range: `'${sheetName}'!A:M`,
+  });
 
-    const data = res.data.values || [];
-    
-    // Store in cache
-    sheetCache.set(sheetName, {
-      data,
-      timestamp: Date.now(),
-    });
-
-    return data;
-  } catch (error) {
-    console.error("Error getting rows from sheet:", error);
-    throw error;
-  }
+  return res.data.values || [];
 }
 
 async function getLast10Rows(createdBy) {
-  try {
-    const results = await Promise.all(
-      ALL_SHEET_NAMES.map(async (sheetName) => {
-        const rows = await getAllRowsFromSheet(sheetName);
-        return { sheetName, rows };
-      })
-    );
+  const results = await Promise.all(
+    ALL_SHEET_NAMES.map(async (sheetName) => {
+      const rows = await getAllRowsFromSheet(sheetName);
+      return { sheetName, rows };
+    })
+  );
 
-    const found = [];
+  const found = [];
 
-    for (const item of results) {
-      for (let i = 1; i < item.rows.length; i++) {
-        const row = item.rows[i];
+  for (const item of results) {
+    for (let i = 1; i < item.rows.length; i++) {
+      const row = item.rows[i];
 
-        // Column K (index 11) = WhatsApp number of creator
-        if (row[11] !== createdBy) continue;
-        
-        // Column L (index 12) = created date/time
-        const createdAt = row[12] ? new Date(row[12]) : parseDateTime(row[1], row[3]);
+      // L = Created By
+      if (row[11] !== createdBy) continue;
 
-        found.push({
-          sheetName: item.sheetName,
-          rowNumber: i + 1,
-          row,
-          createdAt: createdAt || new Date(0),
-        });
-      }
+      // M = Created At
+      const createdAt = row[12] ? new Date(row[12]) : parseDateTime(row[1], row[3]);
+
+      found.push({
+        sheetName: item.sheetName,
+        rowNumber: i + 1,
+        row,
+        createdAt: createdAt || new Date(0),
+      });
     }
-
-    return found
-      .sort((a, b) => b.createdAt - a.createdAt)
-      .slice(0, 10);
-  } catch (error) {
-    console.error("Error getting last 10 rows:", error);
-    throw error;
   }
+
+  return found
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, 10);
 }
 
 async function updateCell(sheetName, rowNumber, columnNumber, value) {
-  try {
-    const sheets = await getSheetsClient();
-    const columnLetter = String.fromCharCode(64 + columnNumber);
+  const sheets = await getSheetsClient();
+  const columnLetter = String.fromCharCode(64 + columnNumber);
 
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: process.env.GOOGLE_SHEET_ID,
-      range: `'${sheetName}'!${columnLetter}${rowNumber}`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: [[value]] },
-    });
-
-    // Invalidate cache
-    sheetCache.delete(sheetName);
-  } catch (error) {
-    console.error("Error updating cell:", error);
-    throw error;
-  }
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: process.env.GOOGLE_SHEET_ID,
+    range: `'${sheetName}'!${columnLetter}${rowNumber}`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [[value]] },
+  });
 }
 
 async function recalculateTotalUsage(sheetName, rowNumber) {
-  try {
-    const rows = await getAllRowsFromSheet(sheetName);
-    const row = rows[rowNumber - 1];
+  const rows = await getAllRowsFromSheet(sheetName);
+  const row = rows[rowNumber - 1];
 
-    if (!row || row.length < 5) return;
-
-    const totalUsage = calculateUsage(row[3], row[4]);
-    await updateCell(sheetName, rowNumber, 6, totalUsage);
-  } catch (error) {
-    console.error("Error recalculating usage:", error);
-    throw error;
-  }
+  const totalUsage = calculateUsage(row[3], row[4]);
+  await updateCell(sheetName, rowNumber, 6, totalUsage);
 }
 
 // =====================
 // WhatsApp sending
 // =====================
 async function sendMessage(to, text) {
-  try {
-    const token = process.env.WHATSAPP_TOKEN.trim();
-    const phoneNumberId = process.env.PHONE_NUMBER_ID.trim();
+  const token = process.env.WHATSAPP_TOKEN.trim();
+  const phoneNumberId = process.env.PHONE_NUMBER_ID.trim();
 
-    await axios.post(
-      `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
-      {
-        messaging_product: "whatsapp",
-        to,
-        type: "text",
-        text: { body: text },
+  await axios.post(
+    `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "text",
+      text: { body: text },
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
       },
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        timeout: 10000,
-      }
-    );
-  } catch (error) {
-    console.error("Error sending message:", error.response?.data || error.message);
-    throw error;
-  }
+    }
+  );
 }
 
 async function sendButtons(to, body, buttons) {
-  try {
-    const token = process.env.WHATSAPP_TOKEN.trim();
-    const phoneNumberId = process.env.PHONE_NUMBER_ID.trim();
+  const token = process.env.WHATSAPP_TOKEN.trim();
+  const phoneNumberId = process.env.PHONE_NUMBER_ID.trim();
 
-    await axios.post(
-      `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
-      {
-        messaging_product: "whatsapp",
-        to,
-        type: "interactive",
-        interactive: {
-          type: "button",
-          body: { text: body },
-          action: {
-            buttons: buttons.slice(0, 3).map((btn) => ({
-              type: "reply",
-              reply: {
-                id: btn.id,
-                title: short(btn.title, 20),
-              },
-            })),
-          },
+  await axios.post(
+    `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: body },
+        action: {
+          buttons: buttons.slice(0, 3).map((btn) => ({
+            type: "reply",
+            reply: {
+              id: btn.id,
+              title: short(btn.title, 20),
+            },
+          })),
         },
       },
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        timeout: 10000,
-      }
-    );
-  } catch (error) {
-    console.error("Error sending buttons:", error.response?.data || error.message);
-    throw error;
-  }
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
 }
 
 async function sendList(to, body, buttonText, rows) {
-  try {
-    const token = process.env.WHATSAPP_TOKEN.trim();
-    const phoneNumberId = process.env.PHONE_NUMBER_ID.trim();
+  const token = process.env.WHATSAPP_TOKEN.trim();
+  const phoneNumberId = process.env.PHONE_NUMBER_ID.trim();
 
-    await axios.post(
-      `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
-      {
-        messaging_product: "whatsapp",
-        to,
-        type: "interactive",
-        interactive: {
-          type: "list",
-          body: { text: body },
-          action: {
-            button: short(buttonText, 20),
-            sections: [
-              {
-                title: "Выбор",
-                rows: rows.slice(0, 10).map((row) => ({
-                  id: row.id,
-                  title: short(row.title, 24),
-                  description: short(row.description || "", 72),
-                })),
-              },
-            ],
-          },
+  await axios.post(
+    `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "list",
+        body: { text: body },
+        action: {
+          button: short(buttonText, 20),
+          sections: [
+            {
+              title: "Выбор",
+              rows: rows.slice(0, 10).map((row) => ({
+                id: row.id,
+                title: short(row.title, 24),
+                description: short(row.description || "", 72),
+              })),
+            },
+          ],
         },
       },
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        timeout: 10000,
-      }
-    );
-  } catch (error) {
-    console.error("Error sending list:", error.response?.data || error.message);
-    throw error;
-  }
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
 }
 
 // =====================
@@ -475,7 +388,13 @@ async function askBaseField(to, session) {
   const field = baseFields[session.step];
 
   if (field.key === "Flight") {
-    const rows = [...flightListMapped, { id: "FLIGHT_MANUAL", title: "Ввести вручную" }];
+    const rows = flightList.map((f) => ({
+      id: `FLIGHT_${f}`,
+      title: f,
+    }));
+
+    rows.push({ id: "FLIGHT_MANUAL", title: "Ввести вручную" });
+
     await sendList(to, "Выберите номер рейса:", "Выбрать", rows);
     return;
   }
@@ -490,12 +409,24 @@ async function askBaseField(to, session) {
   }
 
   if (field.key === "Aircraft") {
-    await sendList(to, "Выберите самолёт:", "Выбрать", aircraftListMapped);
+    const rows = aircraftList.map((a) => ({
+      id: `AIRCRAFT_${a}`,
+      title: a,
+      description: getSheetNameByAircraft(a),
+    }));
+
+    await sendList(to, "Выберите самолёт:", "Выбрать", rows);
     return;
   }
 
   if (field.key === "Airport") {
-    const rows = [...airportListMapped, { id: "AIRPORT_MANUAL", title: "Ввести вручную" }];
+    const rows = airportList.map((a) => ({
+      id: `AIRPORT_${a}`,
+      title: a,
+    }));
+
+    rows.push({ id: "AIRPORT_MANUAL", title: "Ввести вручную" });
+
     await sendList(to, "Выберите аэропорт:", "Выбрать", rows);
     return;
   }
@@ -515,15 +446,19 @@ async function askEquipment(to, session) {
   if (available.length === 0) {
     session.mode = "confirm";
 
-    await sendButtons(to, `${buildPreview(session.baseData, session.equipmentEntries)}
+    await sendButtons(
+      to,
+      `${buildPreview(session.baseData, session.equipmentEntries)}
 
 Все виды оборудования уже выбраны.
 
-Сохранить?`, [
-      { id: "SAVE_YES", title: "Да" },
-      { id: "SAVE_NO", title: "Нет" },
-      { id: "MAIN_MENU", title: "Главное меню" },
-    ]);
+Сохранить?`,
+      [
+        { id: "SAVE_YES", title: "Да" },
+        { id: "SAVE_NO", title: "Нет" },
+        { id: "MAIN_MENU", title: "Главное меню" },
+      ]
+    );
 
     return;
   }
@@ -539,14 +474,16 @@ async function askEquipment(to, session) {
 }
 
 function buildPreview(baseData, equipmentEntries) {
-  const equipmentText = equipmentEntries.map((item, index) => {
-    const total = calculateUsage(item.timeIn, item.timeOut);
+  const equipmentText = equipmentEntries
+    .map((item, index) => {
+      const total = calculateUsage(item.timeIn, item.timeOut);
 
-    return `${index + 1}. ${item.equipment}
+      return `${index + 1}. ${item.equipment}
 Начало: ${item.timeIn || ""}
 Окончание: ${item.timeOut || "не указано"}
 Общее время: ${total || "будет позже"}`;
-  }).join("\n\n");
+    })
+    .join("\n\n");
 
   return `Проверьте данные:
 
@@ -592,39 +529,37 @@ app.get("/webhook", (req, res) => {
 });
 
 async function showMissingRecords(from, session) {
-  try {
-    const rows = await getLast10Rows(from);
+  const rows = await getLast10Rows(from);
 
-    const missing = rows.filter((item) => {
-      const row = item.row;
-      return row[3] && !row[4];
-    });
+  const missing = rows.filter((item) => {
+    const row = item.row;
+    return row[3] && !row[4];
+  });
 
-    if (missing.length === 0) {
-      await sendMessage(from, "Незаполненных записей среди последних 10 записей нет.");
-      await goToMainMenu(from);
-      return;
-    }
-
-    session.mode = "missing_choose_record";
-    session.missing = missing;
-
-    const listRows = missing.slice(0, 10).map((item, index) => ({
-      id: `MISSING_RECORD_${index}`,
-      title: short(`${item.row[2]} ${item.row[3]}`, 24),
-      description: short(`${item.sheetName} | Рейс: ${item.row[0] || ""} | ${item.row[7] || ""} | ${item.row[8] || ""}`, 72),
-    }));
-
-    await sendList(
-      from,
-      "Выберите оборудование, где не заполнено время окончания:",
-      "Выбрать",
-      listRows
-    );
-  } catch (error) {
-    console.error("Error showing missing records:", error);
-    await sendMessage(from, "Ошибка при загрузке записей. Напишите menu.");
+  if (missing.length === 0) {
+    await sendMessage(from, "Незаполненных записей среди последних 10 записей нет.");
+    await goToMainMenu(from);
+    return;
   }
+
+  session.mode = "missing_choose_record";
+  session.missing = missing;
+
+  const listRows = missing.slice(0, 10).map((item, index) => ({
+    id: `MISSING_RECORD_${index}`,
+    title: short(`${item.row[2] || ""} ${item.row[3] || ""}`, 24),
+    description: short(
+      `${item.sheetName} | Рейс: ${item.row[0] || ""} | ${item.row[6] || ""} | ${item.row[7] || ""}`,
+      72
+    ),
+  }));
+
+  await sendList(
+    from,
+    "Выберите оборудование, где не заполнено время окончания:",
+    "Выбрать",
+    listRows
+  );
 }
 
 // =====================
@@ -641,35 +576,46 @@ app.post("/webhook", async (req, res) => {
     const text = extractIncomingText(message);
     if (!text) return;
 
-    // Initialize session if needed
     if (!sessions[from]) {
-  sessions[from] = {
-    mode: "menu",
-    step: 0,
-    baseData: {},
-    equipmentEntries: [],
-    currentEquipment: null,
-  };
+      sessions[from] = {
+        mode: "menu",
+        step: 0,
+        baseData: {},
+        equipmentEntries: [],
+        currentEquipment: null,
+      };
 
-  await showWelcomeMessage(from);
-  await showMainMenu(from);
-  return;
-}
+      await showWelcomeMessage(from);
+
+      if (
+        text.toLowerCase() === "menu" ||
+        text.toLowerCase() === "меню" ||
+        text.toLowerCase() === "start" ||
+        text.toLowerCase() === "старт"
+      ) {
+        await showMainMenu(from);
+        return;
+      }
+    }
 
     const session = sessions[from];
-
-    // Global menu command check
-    if (text === "MAIN_MENU" || isCommandKeyword(text)) {
-      await goToMainMenu(from);
-      return;
-    }
 
     if (text === "FILL_MISSING") {
       await showMissingRecords(from, session);
       return;
     }
 
-    // Menu mode
+    if (
+      text === "MAIN_MENU" ||
+      text.toLowerCase() === "menu" ||
+      text.toLowerCase() === "меню" ||
+      text.toLowerCase() === "start" ||
+      text.toLowerCase() === "старт"
+    ) {
+      await goToMainMenu(from);
+      return;
+    }
+
     if (session.mode === "menu") {
       if (text === "ADD") {
         session.mode = "base";
@@ -683,30 +629,27 @@ app.post("/webhook", async (req, res) => {
       }
 
       if (text === "EDIT") {
-        try {
-          const found = await getLast10Rows(from);
+        const found = await getLast10Rows(from);
 
-          if (found.length === 0) {
-            await sendMessage(from, "Последние записи не найдены.");
-            await showMainMenu(from);
-            return;
-          }
-
-          session.mode = "edit_choose_record";
-          session.found = found;
-
-          const listRows = found.slice(0, 10).map((item, index) => ({
-            id: `EDIT_RECORD_${index}`,
-            title: short(`${item.row[0]} ${item.row[2]}`, 24),
-            description: short(`${item.sheetName} | ${item.row[3] || ""}-${item.row[4] || "не окончено"} | ${item.row[7] || ""} | ${item.row[8] || ""}`, 72),
-          }));
-
-          await sendList(from, "Последние 10 записей:", "Выбрать", listRows);
-        } catch (error) {
-          console.error("Error in EDIT mode:", error);
-          await sendMessage(from, "Ошибка при загрузке записей.");
+        if (found.length === 0) {
+          await sendMessage(from, "Последние записи не найдены.");
           await showMainMenu(from);
+          return;
         }
+
+        session.mode = "edit_choose_record";
+        session.found = found;
+
+        const listRows = found.slice(0, 10).map((item, index) => ({
+          id: `EDIT_RECORD_${index}`,
+          title: short(`${item.row[0] || ""} ${item.row[2] || ""}`, 24),
+          description: short(
+            `${item.sheetName} | ${item.row[3] || ""}-${item.row[4] || "не окончено"} | ${item.row[6] || ""} | ${item.row[7] || ""}`,
+            72
+          ),
+        }));
+
+        await sendList(from, "Последние 10 записей:", "Выбрать", listRows);
         return;
       }
 
@@ -714,7 +657,6 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // Base data collection mode
     if (session.mode === "base") {
       const field = baseFields[session.step];
 
@@ -784,7 +726,6 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // Equipment selection and time entry
     if (session.mode === "equipment_choose") {
       let equipment = "";
 
@@ -890,13 +831,17 @@ app.post("/webhook", async (req, res) => {
       if (text === "ADD_MORE_NO") {
         session.mode = "confirm";
 
-        await sendButtons(from, `${buildPreview(session.baseData, session.equipmentEntries)}
+        await sendButtons(
+          from,
+          `${buildPreview(session.baseData, session.equipmentEntries)}
 
-Сохранить?`, [
-          { id: "SAVE_YES", title: "Да" },
-          { id: "SAVE_NO", title: "Нет" },
-          { id: "MAIN_MENU", title: "Главное меню" },
-        ]);
+Сохранить?`,
+          [
+            { id: "SAVE_YES", title: "Да" },
+            { id: "SAVE_NO", title: "Нет" },
+            { id: "MAIN_MENU", title: "Главное меню" },
+          ]
+        );
         return;
       }
 
@@ -916,26 +861,23 @@ app.post("/webhook", async (req, res) => {
           return;
         }
 
-        try {
-          const hasMissingTimeOut = session.equipmentEntries.some((item) => !item.timeOut);
+        const hasMissingTimeOut = session.equipmentEntries.some((item) => !item.timeOut);
 
-          await saveRowsToSheet(session.baseData, session.equipmentEntries, from);
-          await sendMessage(from, `Данные сохранены. Вкладка: ${getSheetNameByAircraft(session.baseData["Aircraft"])}.`);
+        await saveRowsToSheet(session.baseData, session.equipmentEntries, from);
+        await sendMessage(
+          from,
+          `Данные сохранены. Вкладка: ${getSheetNameByAircraft(session.baseData["Aircraft"])}.`
+        );
 
-          if (hasMissingTimeOut) {
-            await sendButtons(from, "Есть незаполненное время окончания.", [
-              { id: "FILL_MISSING", title: "Ввести данные" },
-              { id: "MAIN_MENU", title: "Главное меню" },
-            ]);
-            return;
-          }
-
-          await goToMainMenu(from);
-        } catch (error) {
-          console.error("Error saving data:", error);
-          await sendMessage(from, "Ошибка при сохранении. Попробуйте позже.");
-          await goToMainMenu(from);
+        if (hasMissingTimeOut) {
+          await sendButtons(from, "Есть незаполненное время окончания.", [
+            { id: "FILL_MISSING", title: "Ввести данные" },
+            { id: "MAIN_MENU", title: "Главное меню" },
+          ]);
+          return;
         }
+
+        await goToMainMenu(from);
         return;
       }
 
@@ -966,35 +908,32 @@ app.post("/webhook", async (req, res) => {
 
       const row = session.missingRecord.row;
 
-      await sendMessage(from, `Вы выбрали:
+      await sendMessage(
+        from,
+        `Вы выбрали:
 Вкладка: ${session.missingRecord.sheetName}
 Оборудование: ${row[2] || ""}
 Рейс: ${row[0] || ""}
 Дата: ${row[1] || ""}
 Начало: ${row[3] || ""}
-Борт: ${row[7] || ""}
-Аэропорт: ${row[8] || ""}
+Борт: ${row[6] || ""}
+Аэропорт: ${row[7] || ""}
 
-Введите время окончания, например 12:45:`);
+Введите время окончания, например 12:45:`
+      );
 
       return;
     }
 
     if (session.mode === "missing_enter_time_out") {
-      try {
-        const sheetName = session.missingRecord.sheetName;
-        const rowNumber = session.missingRecord.rowNumber;
+      const sheetName = session.missingRecord.sheetName;
+      const rowNumber = session.missingRecord.rowNumber;
 
-        await updateCell(sheetName, rowNumber, 5, text);
-        await recalculateTotalUsage(sheetName, rowNumber);
+      await updateCell(sheetName, rowNumber, 5, text);
+      await recalculateTotalUsage(sheetName, rowNumber);
 
-        await sendMessage(from, "Время окончания добавлено. Общее время пересчитано.");
-        await goToMainMenu(from);
-      } catch (error) {
-        console.error("Error updating missing time:", error);
-        await sendMessage(from, "Ошибка при обновлении. Попробуйте позже.");
-        await goToMainMenu(from);
-      }
+      await sendMessage(from, "Время окончания добавлено. Общее время пересчитано.");
+      await goToMainMenu(from);
       return;
     }
 
@@ -1039,37 +978,29 @@ app.post("/webhook", async (req, res) => {
     }
 
     if (session.mode === "edit_enter_value") {
-      try {
-        const sheetName = session.editRecord.sheetName;
-        const rowNumber = session.editRecord.rowNumber;
-        const columnNumber = getColumnByField(session.editField.key);
+      const sheetName = session.editRecord.sheetName;
+      const rowNumber = session.editRecord.rowNumber;
+      const columnNumber = getColumnByField(session.editField.key);
 
-        if (!columnNumber) {
-          await sendMessage(from, "Ошибка выбора колонки. Напишите menu.");
-          return;
-        }
-
-        await updateCell(sheetName, rowNumber, columnNumber, text);
-
-        if (session.editField.key === "Time in" || session.editField.key === "Time out") {
-          await recalculateTotalUsage(sheetName, rowNumber);
-        }
-
-        await sendMessage(from, "Запись обновлена.");
-        await goToMainMenu(from);
-      } catch (error) {
-        console.error("Error updating record:", error);
-        await sendMessage(from, "Ошибка при обновлении. Попробуйте позже.");
-        await goToMainMenu(from);
+      if (!columnNumber) {
+        await sendMessage(from, "Ошибка выбора колонки. Напишите menu.");
+        return;
       }
+
+      await updateCell(sheetName, rowNumber, columnNumber, text);
+
+      if (session.editField.key === "Time in" || session.editField.key === "Time out") {
+        await recalculateTotalUsage(sheetName, rowNumber);
+      }
+
+      await sendMessage(from, "Запись обновлена.");
+      await goToMainMenu(from);
       return;
     }
 
-    // ✅ Proper error handling - don't break the flow
-    console.warn(`Unexpected input in mode "${session.mode}": "${text}"`);
-    await sendMessage(from, "Не понимаю. Напишите 'menu' для возврата в главное меню.");
+    await showMainMenu(from);
   } catch (error) {
-    console.error("ERROR:", error.response?.data || error.message);
+    console.log("ERROR:", error.response?.data || error.message);
   }
 });
 
