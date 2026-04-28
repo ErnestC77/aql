@@ -652,11 +652,8 @@ app.post("/webhook", async (req, res) => {
       };
 
       await showWelcomeMessage(from);
-
-      // Check for menu command on first message
-      if (isCommandKeyword(text)) {
-        await showMainMenu(from);
-      }
+      // ✅ Automatically show main menu after welcome message
+      await showMainMenu(from);
       return;
     }
 
