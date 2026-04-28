@@ -8,6 +8,17 @@ const app = express();
 app.use(express.json());
 
 const sessions = {};
+const SESSION_TTL = 60 * 60 * 1000; // 1 hour
+
+// Periodically purge stale sessions
+setInterval(() => {
+  const now = Date.now();
+  for (const phone in sessions) {
+    if (now - (sessions[phone].lastActive || 0) > SESSION_TTL) {
+      delete sessions[phone];
+    }
+  }
+}, 10 * 60 * 1000); // run every 10 minutes
 
 // =====================
 // Cache & Constants
@@ -117,7 +128,7 @@ function todayDate() {
 }
 
 function isCommandKeyword(text) {
-  return commandKeywords.includes(text.toLowerCase());
+  return !!text && commandKeywords.includes(text.toLowerCase());
 }
 
 function calculateUsage(timeIn, timeOut) {
@@ -138,6 +149,11 @@ function calculateUsage(timeIn, timeOut) {
   const minutes = diff % 60;
 
   return `${hours}:${String(minutes).padStart(2, "0")}`;
+}
+
+function isValidTime(t) {
+  if (!t) return false;
+  return /^\d{1,2}:\d{2}$/.test(t.trim());
 }
 
 function parseDateTime(dateText, timeText) {
@@ -265,7 +281,10 @@ async function getLast10Rows(createdBy) {
         if (row[11] !== createdBy) continue;
         
         // Column L (index 12) = created date/time
-        const createdAt = row[12] ? new Date(row[12]) : parseDateTime(row[1], row[3]);
+        const parsedDate = row[12] ? new Date(row[12]) : null;
+        const createdAt = (parsedDate && !isNaN(parsedDate))
+          ? parsedDate
+          : parseDateTime(row[1], row[3]);
 
         found.push({
           sheetName: item.sheetName,
@@ -305,14 +324,21 @@ async function updateCell(sheetName, rowNumber, columnNumber, value) {
   }
 }
 
-async function recalculateTotalUsage(sheetName, rowNumber) {
+async function recalculateTotalUsage(sheetName, rowNumber, timeIn, timeOut) {
   try {
-    const rows = await getAllRowsFromSheet(sheetName);
-    const row = rows[rowNumber - 1];
+    let resolvedTimeIn = timeIn;
+    let resolvedTimeOut = timeOut;
 
-    if (!row || row.length < 5) return;
+    // Only fetch from sheet if not provided
+    if (resolvedTimeIn === undefined || resolvedTimeOut === undefined) {
+      const rows = await getAllRowsFromSheet(sheetName);
+      const row = rows[rowNumber - 1];
+      if (!row || row.length < 5) return;
+      resolvedTimeIn = resolvedTimeIn ?? row[3];
+      resolvedTimeOut = resolvedTimeOut ?? row[4];
+    }
 
-    const totalUsage = calculateUsage(row[3], row[4]);
+    const totalUsage = calculateUsage(resolvedTimeIn, resolvedTimeOut);
     await updateCell(sheetName, rowNumber, 6, totalUsage);
   } catch (error) {
     console.error("Error recalculating usage:", error);
@@ -466,6 +492,7 @@ async function goToMainMenu(from) {
     baseData: {},
     equipmentEntries: [],
     currentEquipment: null,
+    lastActive: Date.now(),
   };
 
   await showMainMenu(from);
@@ -649,9 +676,8 @@ app.post("/webhook", async (req, res) => {
         baseData: {},
         equipmentEntries: [],
         currentEquipment: null,
+        lastActive: Date.now(),
       };
-
-      await showWelcomeMessage(from);
 
       // Check for menu command on first message
       if (isCommandKeyword(text)) {
@@ -661,6 +687,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     const session = sessions[from];
+    session.lastActive = Date.now();
 
     // Global menu command check
     if (text === "MAIN_MENU" || isCommandKeyword(text)) {
@@ -830,6 +857,10 @@ app.post("/webhook", async (req, res) => {
     }
 
     if (session.mode === "equipment_time_in") {
+      if (!isValidTime(text)) {
+        await sendMessage(from, "Неверный формат. Введите время как 10:20:");
+        return;
+      }
       session.currentEquipment.timeIn = text;
 
       session.mode = "equipment_time_out_choice";
@@ -871,6 +902,10 @@ app.post("/webhook", async (req, res) => {
     }
 
     if (session.mode === "equipment_time_out_enter") {
+      if (!isValidTime(text)) {
+        await sendMessage(from, "Неверный формат. Введите время как 12:45:");
+        return;
+      }
       session.currentEquipment.timeOut = text;
       session.equipmentEntries.push(session.currentEquipment);
       session.currentEquipment = null;
@@ -985,12 +1020,16 @@ app.post("/webhook", async (req, res) => {
     }
 
     if (session.mode === "missing_enter_time_out") {
+      if (!isValidTime(text)) {
+        await sendMessage(from, "Неверный формат. Введите время как 12:45:");
+        return;
+      }
       try {
         const sheetName = session.missingRecord.sheetName;
         const rowNumber = session.missingRecord.rowNumber;
 
         await updateCell(sheetName, rowNumber, 5, text);
-        await recalculateTotalUsage(sheetName, rowNumber);
+        await recalculateTotalUsage(sheetName, rowNumber, session.missingRecord.row[3], text);
 
         await sendMessage(from, "Время окончания добавлено. Общее время пересчитано.");
         await goToMainMenu(from);
@@ -1056,7 +1095,10 @@ app.post("/webhook", async (req, res) => {
         await updateCell(sheetName, rowNumber, columnNumber, text);
 
         if (session.editField.key === "Time in" || session.editField.key === "Time out") {
-          await recalculateTotalUsage(sheetName, rowNumber);
+          const row = session.editRecord.row;
+          const newTimeIn = session.editField.key === "Time in" ? text : row[3];
+          const newTimeOut = session.editField.key === "Time out" ? text : row[4];
+          await recalculateTotalUsage(sheetName, rowNumber, newTimeIn, newTimeOut);
         }
 
         await sendMessage(from, "Запись обновлена.");
