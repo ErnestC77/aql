@@ -368,10 +368,7 @@ async function askBaseField(to, session) {
   if (field.key === "CombinedInfo") {
     await sendMessage(
       to,
-      "Введите самолёт, аэропорт и инженера одним сообщением:
-
-Пример:
-ER-BAS, SHJ, Gromov R."
+      "Введите самолёт, аэропорт и инженера одним сообщением:\n\nПример:\nER-BAS, SHJ, Gromov R."
     );
     return;
   }
