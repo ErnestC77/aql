@@ -257,30 +257,21 @@ async function getAllRowsFromSheet(sheetName) {
   return res.data.values || [];
 }
 
-async function getRowsLast24Hours() {
-  const now = new Date();
-  const last24 = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  const found = [];
+async function getLast10Rows()const found = [];
 
   for (const sheetName of ALL_SHEET_NAMES) {
     const rows = await getAllRowsFromSheet(sheetName);
 
     for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      const rowDate = parseDateTime(row[1], row[3]);
-
-      if (rowDate && rowDate >= last24 && rowDate <= now) {
-        found.push({
-          sheetName,
-          rowNumber: i + 1,
-          row,
-          rowDate,
-        });
-      }
+      found.push({
+        sheetName,
+        rowNumber: i + 1,
+        row: rows[i],
+      });
     }
   }
 
-  return found.sort((a, b) => b.rowDate - a.rowDate);
+  return found.slice(-10).reverse();
 }
 
 async function updateCell(sheetName, rowNumber, columnNumber, value) {
@@ -439,7 +430,7 @@ app.get("/webhook", (req, res) => {
 });
 
 async function showMissingRecords(from, session) {
-  const rows = await getRowsLast24Hours();
+  const rows = await getLast10Rows();
 
   const missing = rows.filter((item) => {
     const row = item.row;
@@ -447,7 +438,7 @@ async function showMissingRecords(from, session) {
   });
 
   if (missing.length === 0) {
-    await sendMessage(from, "Незаполненных записей за последние 24 часа нет.");
+    await sendMessage(from, "Незаполненных записей среди последних 10 записей нет.");
     await goToMainMenu(from);
     return;
   }
@@ -524,10 +515,10 @@ app.post("/webhook", async (req, res) => {
       }
 
       if (text === "EDIT") {
-        const found = await getRowsLast24Hours();
+        const found = await getLast10Rows();
 
         if (found.length === 0) {
-          await sendMessage(from, "За последние 24 часа записи не найдены.");
+          await sendMessage(from, "Последние записи не найдены.");
           await showMainMenu(from);
           return;
         }
@@ -541,7 +532,7 @@ app.post("/webhook", async (req, res) => {
           description: short(`${item.sheetName} | ${item.row[3] || ""}-${item.row[4] || "не окончено"} | ${item.row[6] || ""} | ${item.row[7] || ""} | ${item.row[8] || ""}`, 72),
         }));
 
-        await sendList(from, "Записи за последние 24 часа:", "Выбрать", listRows);
+        await sendList(from, "Последние 10 записей:", "Выбрать", listRows);
         return;
       }
 
