@@ -32,9 +32,27 @@ function getSheetNameByAircraft(aircraft) {
   return aircraftSheetMap[aircraft] || DEFAULT_SHEET_NAME;
 }
 
+const aircraftList = [
+  "ER-BAS", "ER-BYK", "ER-GAG", "ER-JAN", "ER-HAJ",
+  "ER-BOY", "ER-BOS", "ER-UFC", "ER-BCT", "P4-AQQ"
+];
+
+const airportList = ["DWC", "HKG", "SHJ", "AUH", "FJR", "SYD"];
+
 const equipmentList = [
   "PAXSTEP", "GPU", "SCISSORLIFT", "NITROGEN", "JACK", "DOLLY"
 ];
+
+// WhatsApp number -> Engineer name
+// Replace numbers with real WhatsApp numbers without + sign.
+const engineerByPhone = {
+  "971000000000": "Engineer 1",
+  "971111111111": "Engineer 2",
+};
+
+function getEngineerNameByPhone(phone) {
+  return engineerByPhone[phone] || phone;
+}
 
 const flightList = [
   "TVR4701", "TVR4702", "TVR4703", "TVR4704",
@@ -44,7 +62,8 @@ const flightList = [
 const baseFields = [
   { key: "Flight", label: "Номер рейса" },
   { key: "Date", label: "Дата" },
-  { key: "CombinedInfo", label: "Самолёт, аэропорт, инженер" },
+  { key: "Aircraft", label: "Самолёт" },
+  { key: "Airport", label: "Аэропорт" },
 ];
 
 const editableFields = [
@@ -66,7 +85,8 @@ function short(text, max = 24) {
 async function getSheetsClient() {
   const auth = new google.auth.JWT({
     email: process.env.GOOGLE_CLIENT_EMAIL,
-    key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+    key: process.env.GOOGLE_PRIVATE_KEY.replace(/\n/g, "
+"),
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
 
@@ -304,23 +324,6 @@ async function recalculateTotalUsage(sheetName, rowNumber) {
   await updateCell(sheetName, rowNumber, 6, totalUsage);
 }
 
-async function showWelcomeMessage(to) {
-  await sendMessage(
-    to,
-    `Здравствуйте! 👋
-
-Этот бот предназначен для внесения данных по наземному оборудованию в Google Sheet.
-
-Что можно делать:
-1. Внести данные — создать новую запись.
-2. Редактировать — изменить свою последнюю запись.
-3. Дополнить — добавить время окончания, если оно было пропущено.
-
-Для начала нажмите кнопку ниже или напишите:
-menu`
-  );
-}
-
 async function showMainMenu(to) {
   await sendButtons(to, "Главное меню:", [
     { id: "ADD", title: "Внести данные" },
@@ -365,11 +368,26 @@ async function askBaseField(to, session) {
     return;
   }
 
-  if (field.key === "CombinedInfo") {
-    await sendMessage(
-      to,
-      "Введите самолёт, аэропорт и инженера одним сообщением:\n\nПример:\nER-BAS, SHJ, Gromov R."
-    );
+  if (field.key === "Aircraft") {
+    const rows = aircraftList.map((a) => ({
+      id: `AIRCRAFT_${a}`,
+      title: a,
+      description: getSheetNameByAircraft(a),
+    }));
+
+    await sendList(to, "Выберите самолёт:", "Выбрать", rows);
+    return;
+  }
+
+  if (field.key === "Airport") {
+    const rows = airportList.map((a) => ({
+      id: `AIRPORT_${a}`,
+      title: a,
+    }));
+
+    rows.push({ id: "AIRPORT_MANUAL", title: "Ввести вручную" });
+
+    await sendList(to, "Выберите аэропорт:", "Выбрать", rows);
     return;
   }
 
@@ -436,6 +454,8 @@ async function finishBaseFlow(from, session) {
     await askBaseField(from, session);
     return;
   }
+
+  session.baseData["Engineer Name"] = getEngineerNameByPhone(from);
 
   session.mode = "equipment_choose";
   await askEquipment(from, session);
@@ -509,9 +529,8 @@ app.post("/webhook", async (req, res) => {
         currentEquipment: null,
       };
 
-      await showWelcomeMessage(from);
-	  await showMainMenu(from);
-	  return;
+      await showMainMenu(from);
+      return;
     }
 
     const session = sessions[from];
@@ -594,21 +613,18 @@ app.post("/webhook", async (req, res) => {
         session.mode = "base_manual_date";
         await sendMessage(from, "Введите дату вручную, например 27.04.2026:");
         return;
-      } else if (field.key === "CombinedInfo") {
-        const parts = text.split(",").map((x) => x.trim());
+      } else if (text.startsWith("AIRCRAFT_")) {
+        session.baseData["Aircraft"] = text.replace("AIRCRAFT_", "");
+      } else if (text.startsWith("AIRPORT_")) {
+        const airport = text.replace("AIRPORT_", "");
 
-        if (parts.length < 3) {
-          await sendMessage(from, "Введите в формате:
-Самолёт, Аэропорт, Инженер
-
-Пример:
-ER-BAS, SHJ, Ernest");
+        if (airport === "MANUAL") {
+          session.mode = "base_manual_airport";
+          await sendMessage(from, "Введите аэропорт вручную:");
           return;
         }
 
-        session.baseData["Aircraft"] = parts[0].toUpperCase();
-        session.baseData["Airport"] = parts[1].toUpperCase();
-        session.baseData["Engineer Name"] = parts.slice(2).join(" ");
+        session.baseData["Airport"] = airport;
       } else {
         session.baseData[field.key] = text;
       }
@@ -628,6 +644,14 @@ ER-BAS, SHJ, Ernest");
 
     if (session.mode === "base_manual_date") {
       session.baseData["Date"] = text;
+      session.mode = "base";
+      session.step++;
+      await finishBaseFlow(from, session);
+      return;
+    }
+
+    if (session.mode === "base_manual_airport") {
+      session.baseData["Airport"] = text.toUpperCase();
       session.mode = "base";
       session.step++;
       await finishBaseFlow(from, session);
