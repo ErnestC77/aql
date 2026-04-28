@@ -573,32 +573,29 @@ app.post("/webhook", async (req, res) => {
 		baseData: {},
 		equipmentEntries: [],
 		currentEquipment: null,
-	};
+    };
 
-	await showWelcomeMessage(from);
+    await showWelcomeMessage(from);
 
-	if (
+    if (
     text.toLowerCase() === "menu" ||
     text.toLowerCase() === "меню" ||
     text.toLowerCase() === "start" ||
     text.toLowerCase() === "старт"
-	) {
+    ) {
 		await showMainMenu(from);
 		return;
-  }
+    }
 
-  // не делаем return, чтобы первое нажатие ADD/EDIT/FILL_MISSING обработалось ниже
+  // не делаем return
 	}
 
-  // не делаем return, чтобы первое нажатие ADD/EDIT/FILL_MISSING обработалось ниже
-}
+	const session = sessions[from];
 
-    const session = sessions[from];
-
-    if (text === "FILL_MISSING") {
-      await showMissingRecords(from, session);
-      return;
-    }
+	if (text === "FILL_MISSING") {
+	await showMissingRecords(from, session);
+		return;
+	}
 
     if (
       text === "MAIN_MENU" ||
