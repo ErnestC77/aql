@@ -639,7 +639,7 @@ async function showMissingRecords(from, session) {
     const listRows = missing.slice(0, 10).map((item, index) => ({
       id: `MISSING_RECORD_${index}`,
       title: short(`${item.row[2]} ${item.row[3]}`, 24),
-      description: short(`${item.sheetName} | Рейс: ${item.row[0] || ""} | ${item.row[7] || ""} | ${item.row[8] || ""}`, 72),
+      description: short(`Борт: ${item.row[6] || ""} | ${item.row[3] || ""}-${item.row[4] || "не окончено"} | ${item.row[7] || ""}`, 72),
     }));
 
     await sendList(
@@ -729,7 +729,7 @@ app.post("/webhook", async (req, res) => {
           const listRows = found.slice(0, 10).map((item, index) => ({
             id: `EDIT_RECORD_${index}`,
             title: short(`${item.row[0]} ${item.row[2]}`, 24),
-            description: short(`${item.sheetName} | ${item.row[3] || ""}-${item.row[4] || "не окончено"} | ${item.row[7] || ""} | ${item.row[8] || ""}`, 72),
+            description: short(`Борт: ${item.row[6] || ""} | ${item.row[3] || ""}-${item.row[4] || "не окончено"} | ${item.row[7] || ""}`, 72),
           }));
 
           await sendList(from, "Последние 10 записей:", "Выбрать", listRows);
@@ -1055,6 +1055,7 @@ app.post("/webhook", async (req, res) => {
       await sendList(
         from,
         `Что изменить?
+Борт: ${session.editRecord.row[6] || ""}
 Вкладка: ${session.editRecord.sheetName}`,
         "Выбрать поле",
         editableFields.map((f, i) => ({
