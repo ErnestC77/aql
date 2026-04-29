@@ -111,7 +111,6 @@ const editableFields = [
   { key: "Time in", label: "Время начала", col: 4 },
   { key: "Time out", label: "Время окончания", col: 5 },
   { key: "Aircraft", label: "Самолёт", col: 7 },
-  { key: "Aircraft Registration", label: "Регистрация борта", col: 6 },
   { key: "Airport", label: "Аэропорт", col: 8 },
   { key: "Engineer Name", label: "Инженер", col: 9 },
 ];
