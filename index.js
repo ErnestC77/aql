@@ -376,6 +376,31 @@ async function sendMessage(to, text) {
   }
 }
 
+async function sendTypingIndicator(to) {
+  try {
+    const token = process.env.WHATSAPP_TOKEN.trim();
+    const phoneNumberId = process.env.PHONE_NUMBER_ID.trim();
+
+    await axios.post(
+      `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
+      {
+        messaging_product: "whatsapp",
+        to,
+        type: "typing"
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 5000,
+      }
+    );
+  } catch (error) {
+    console.log("Typing indicator not supported:", error.response?.data || error.message);
+  }
+}
+
 async function sendButtons(to, body, buttons) {
   try {
     const token = process.env.WHATSAPP_TOKEN.trim();
@@ -666,6 +691,12 @@ app.post("/webhook", async (req, res) => {
 
     const from = message.from;
     const text = extractIncomingText(message);
+
+    // показываем "печатает..."
+    await sendTypingIndicator(from);
+
+    // небольшая задержка чтобы было видно
+    await new Promise(r => setTimeout(r, 700));
     if (!text) return;
 
     // Initialize session if needed
