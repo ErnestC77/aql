@@ -50,7 +50,7 @@ function getSheetNameByAircraft(aircraft) {
 }
 
 // =====================
-// Lists (Pre-mapped)
+// Lists
 // =====================
 const aircraftList = [
   "ER-BAS", "ER-BYK", "ER-GAG", "ER-JAN", "ER-HAJ",
@@ -224,7 +224,7 @@ async function getAllRowsFromSheet(sheetName) {
     });
 
     const data = res.data.values || [];
-    
+
     sheetCache.set(sheetName, {
       data,
       timestamp: Date.now(),
@@ -253,7 +253,7 @@ async function getLast10Rows(createdBy) {
         const row = item.rows[i];
 
         if (row[11] !== createdBy) continue;
-        
+
         const parsedDate = row[12] ? new Date(row[12]) : null;
         const createdAt = (parsedDate && !isNaN(parsedDate))
           ? parsedDate
@@ -300,7 +300,7 @@ async function deleteRow(sheetName, rowNumber) {
   try {
     const sheets = await getSheetsClient();
     const sheetId = await getSheetIdByName(sheetName);
-    
+
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId: process.env.GOOGLE_SHEET_ID,
       requestBody: {
@@ -484,20 +484,22 @@ async function goToMainMenu(from, session) {
 // Parse single-line input
 // =====================
 function parseInputLine(text) {
-  // Формат: РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР; ОБОРУДОВАНИЕ, ВРЕМЯ_НАЧАЛА, ВРЕМЯ_КОНЦА; ОБОРУДОВАНИЕ2, ВРЕМЯ_НАЧАЛА2, ВРЕМЯ_КОНЦА2; ...
-  // Пример: TVR4701, 30.04.2026, ER-BAS, DWC, Ernest; PAXSTEP, 10:00, 12:30; GPU, 12:45, 15:20
-  
-  const parts = text.split(";").map(p => p.trim());
-  
-  if (parts.length < 1) {
+  // Формат:
+  // РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР; ОБОРУДОВАНИЕ, ВРЕМЯ_НАЧАЛА, ВРЕМЯ_КОНЦА; ...
+  // ВРЕМЯ_КОНЦА необязательно. Его можно добавить позже через меню "Редактировать".
+  // Пример с окончанием: TVR4701, 30.04.2026, ER-BAS, DWC, Ernest; PAXSTEP, 10:00, 12:30; GPU, 12:45, 15:20
+  // Пример без окончания: TVR4701, 30.04.2026, ER-BAS, DWC, Ernest; PAXSTEP, 10:00; GPU, 12:45
+
+  const parts = text.split(";").map(p => p.trim()).filter(Boolean);
+
+  if (parts.length < 2) {
     return null;
   }
 
-  // Parse base data from first part
   const baseParts = parts[0].split(",").map(p => p.trim());
-  
+
   if (baseParts.length < 5) {
-    return null; // Need at least: flight, date, aircraft, airport, engineer
+    return null;
   }
 
   const baseData = {
@@ -508,26 +510,30 @@ function parseInputLine(text) {
     "Engineer Name": baseParts[4],
   };
 
-  // Validate base data
   if (!aircraftList.includes(baseData["Aircraft"])) {
     return null;
   }
+
   if (!airportList.includes(baseData["Airport"])) {
     return null;
   }
 
-  // Parse equipment entries (starting from part 1)
   const equipmentEntries = [];
+
   for (let i = 1; i < parts.length; i++) {
     const equipParts = parts[i].split(",").map(p => p.trim());
-    
-    if (equipParts.length < 3) continue; // Need: equipment, timeIn, timeOut
-    
+
+    if (equipParts.length < 2) continue;
+
     const equipment = equipParts[0].toUpperCase();
     const timeIn = equipParts[1];
-    const timeOut = equipParts[2];
+    const timeOut = equipParts[2] || "";
 
-    if (!equipment || !isValidTime(timeIn) || !isValidTime(timeOut)) {
+    if (!equipment || !isValidTime(timeIn)) {
+      return null;
+    }
+
+    if (timeOut && !isValidTime(timeOut)) {
       return null;
     }
 
@@ -575,7 +581,6 @@ app.post("/webhook", async (req, res) => {
     const text = extractIncomingText(message);
     if (!text) return;
 
-    // Initialize session if needed
     if (!sessions[from]) {
       sessions[from] = {
         mode: "menu",
@@ -591,14 +596,18 @@ app.post("/webhook", async (req, res) => {
     // =====================
     // Button handlers
     // =====================
-    
-    // Main menu buttons
+
     if (text === "BTN_ADD") {
       await sendMessage(from, `Введите данные в одну строку в формате:
-РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР; ОБОРУДОВАНИЕ, ВРЕМЯ НАЧАЛА, ВРЕМЯ КОНЦА; ОБОРУДОВАНИЕ2, ВРЕМЯ НАЧАЛА2, ВРЕМЯ КОНЦА2; ...
+РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР; ОБОРУДОВАНИЕ, ВРЕМЯ НАЧАЛА, ВРЕМЯ ОКОНЧАНИЯ; ОБОРУДОВАНИЕ2, ВРЕМЯ НАЧАЛА2, ВРЕМЯ ОКОНЧАНИЯ2; ...
 
-Пример:
-TVR4701, 30.04.2026, ER-BAS, DWC, Gromov Roman; PAXSTEP, 10:00, 12:30; GPU, 12:45, 15:20`);
+✅ Время окончания необязательно. Его можно добавить позже через «Редактировать» → «Время окончания».
+
+Пример с окончанием:
+TVR4701, 30.04.2026, ER-BAS, DWC, Gromov Roman; PAXSTEP, 10:00, 12:30; GPU, 12:45, 15:20
+
+Пример без окончания:
+TVR4701, 30.04.2026, ER-BAS, DWC, Gromov Roman; PAXSTEP, 10:00; GPU, 12:45`);
       session.mode = "menu";
       return;
     }
@@ -647,7 +656,7 @@ TVR4701, 30.04.2026, ER-BAS, DWC, Gromov Roman; PAXSTEP, 10:00, 12:30; GPU, 12:4
         const listRows = found.map((item, index) => ({
           id: `EDIT_RECORD_${index}`,
           title: short(`${item.row[0]} ${item.row[1]}`, 24),
-          description: short(`Борт: ${item.row[6] || ""} | ${item.row[2] || ""} | ${item.row[3] || ""}-${item.row[4] || ""}`, 72),
+          description: short(`Борт: ${item.row[6] || ""} | ${item.row[2] || ""} | ${item.row[3] || ""}-${item.row[4] || "не окончено"}`, 72),
         }));
 
         await sendList(from, "Выберите запись для редактирования:", "Выбрать", listRows);
@@ -675,7 +684,7 @@ TVR4701, 30.04.2026, ER-BAS, DWC, Gromov Roman; PAXSTEP, 10:00, 12:30; GPU, 12:4
         const listRows = found.map((item, index) => ({
           id: `DELETE_RECORD_${index}`,
           title: short(`${item.row[0]} ${item.row[1]}`, 24),
-          description: short(`Борт: ${item.row[6] || ""} | ${item.row[2] || ""} | ${item.row[3] || ""}-${item.row[4] || ""}`, 72),
+          description: short(`Борт: ${item.row[6] || ""} | ${item.row[2] || ""} | ${item.row[3] || ""}-${item.row[4] || "не окончено"}`, 72),
         }));
 
         await sendList(from, "Выберите запись для удаления:", "Выбрать", listRows);
@@ -691,10 +700,15 @@ TVR4701, 30.04.2026, ER-BAS, DWC, Gromov Roman; PAXSTEP, 10:00, 12:30; GPU, 12:4
       await sendMessage(from, `📖 СПРАВКА ПО ИСПОЛЬЗОВАНИЮ
 
 Формат ввода данных:
-РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР; ОБОРУДОВАНИЕ, ВРЕМЯ НАЧАЛА, ВРЕМЯ КОНЦА; ОБОРУДОВАНИЕ2, ВРЕМЯ НАЧАЛА2, ВРЕМЯ КОНЦА2; ...
+РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР; ОБОРУДОВАНИЕ, ВРЕМЯ НАЧАЛА, ВРЕМЯ ОКОНЧАНИЯ; ОБОРУДОВАНИЕ2, ВРЕМЯ НАЧАЛА2, ВРЕМЯ ОКОНЧАНИЯ2; ...
 
-Пример:
+Время окончания необязательно. Его можно добавить позже через «Редактировать» → «Время окончания».
+
+Пример с окончанием:
 TVR4701, 30.04.2026, ER-BAS, DWC, Gromov Roman; PAXSTEP, 10:00, 12:30; GPU, 12:45, 15:20
+
+Пример без окончания:
+TVR4701, 30.04.2026, ER-BAS, DWC, Gromov Roman; PAXSTEP, 10:00; GPU, 12:45
 
 Допустимые самолеты:
 ${aircraftList.join(", ")}
@@ -709,18 +723,22 @@ ${equipmentList.join(", ")}`);
     }
 
     // =====================
-    // Command handlers (text)
+    // Text commands
     // =====================
 
-    // Help command
     if (text.toLowerCase() === "помощь" || text.toLowerCase() === "help") {
       await sendMessage(from, `📖 СПРАВКА ПО ИСПОЛЬЗОВАНИЮ
 
 Формат ввода данных:
-РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР; ОБОРУДОВАНИЕ, ВРЕМЯ_НАЧАЛА, ВРЕМЯ_КОНЦА; ОБОРУДОВАНИЕ2, ВРЕМЯ_НАЧАЛА2, ВРЕМЯ_КОНЦА2; ...
+РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР; ОБОРУДОВАНИЕ, ВРЕМЯ_НАЧАЛА, ВРЕМЯ_ОКОНЧАНИЯ; ОБОРУДОВАНИЕ2, ВРЕМЯ_НАЧАЛА2, ВРЕМЯ_ОКОНЧАНИЯ2; ...
 
-Пример:
+Время окончания необязательно. Его можно добавить позже через «Редактировать» → «Время окончания».
+
+Пример с окончанием:
 TVR4701, 30.04.2026, ER-BAS, DWC, Ernest; PAXSTEP, 10:00, 12:30; GPU, 12:45, 15:20
+
+Пример без окончания:
+TVR4701, 30.04.2026, ER-BAS, DWC, Ernest; PAXSTEP, 10:00; GPU, 12:45
 
 Допустимые самолеты:
 ${aircraftList.join(", ")}
@@ -741,7 +759,6 @@ ${equipmentList.join(", ")}
       return;
     }
 
-    // List records command
     if (text.toLowerCase() === "список") {
       try {
         const found = await getLast10Rows(from);
@@ -770,7 +787,6 @@ ${equipmentList.join(", ")}
       return;
     }
 
-    // View record details
     if (session.mode === "view_records" && text.startsWith("VIEW_RECORD_")) {
       const index = Number(text.replace("VIEW_RECORD_", ""));
 
@@ -801,7 +817,6 @@ ${equipmentList.join(", ")}
       return;
     }
 
-    // Edit command
     if (text.toLowerCase() === "редакт" || text.toLowerCase() === "edit") {
       try {
         const found = await getLast10Rows(from);
@@ -818,7 +833,7 @@ ${equipmentList.join(", ")}
         const listRows = found.map((item, index) => ({
           id: `EDIT_RECORD_${index}`,
           title: short(`${item.row[0]} ${item.row[1]}`, 24),
-          description: short(`Борт: ${item.row[6] || ""} | ${item.row[2] || ""} | ${item.row[3] || ""}-${item.row[4] || ""}`, 72),
+          description: short(`Борт: ${item.row[6] || ""} | ${item.row[2] || ""} | ${item.row[3] || ""}-${item.row[4] || "не окончено"}`, 72),
         }));
 
         await sendList(from, "Выберите запись для редактирования:", "Выбрать", listRows);
@@ -883,7 +898,6 @@ ${equipmentList.join(", ")}
           return;
         }
 
-        // Validate time if needed
         if (session.editField.key === "Time in" || session.editField.key === "Time out") {
           if (!isValidTime(text)) {
             await sendMessage(from, "Неверный формат времени. Введите ЧЧ:ММ");
@@ -893,7 +907,6 @@ ${equipmentList.join(", ")}
 
         await updateCell(sheetName, rowNumber, columnNumber, text);
 
-        // Recalculate if time was changed
         if (session.editField.key === "Time in" || session.editField.key === "Time out") {
           const row = session.editRecord.row;
           const newTimeIn = session.editField.key === "Time in" ? text : row[3];
@@ -911,7 +924,6 @@ ${equipmentList.join(", ")}
       return;
     }
 
-    // Delete command
     if (text.toLowerCase() === "удалить" || text.toLowerCase() === "delete") {
       try {
         const found = await getLast10Rows(from);
@@ -928,7 +940,7 @@ ${equipmentList.join(", ")}
         const listRows = found.map((item, index) => ({
           id: `DELETE_RECORD_${index}`,
           title: short(`${item.row[0]} ${item.row[1]}`, 24),
-          description: short(`Борт: ${item.row[6] || ""} | ${item.row[2] || ""} | ${item.row[3] || ""}-${item.row[4] || ""}`, 72),
+          description: short(`Борт: ${item.row[6] || ""} | ${item.row[2] || ""} | ${item.row[3] || ""}-${item.row[4] || "не окончено"}`, 72),
         }));
 
         await sendList(from, "Выберите запись для удаления:", "Выбрать", listRows);
@@ -953,11 +965,12 @@ ${equipmentList.join(", ")}
       session.mode = "delete_confirm";
 
       const row = session.deleteRecord.row;
+
       await sendButtons(from, `Удалить эту запись?
 Рейс: ${row[0]}
 Дата: ${row[1]}
 Оборудование: ${row[2]}
-Время: ${row[3]}-${row[4]}`, [
+Время: ${row[3]}-${row[4] || "не окончено"}`, [
         { id: "DELETE_YES", title: "Да, удалить" },
         { id: "DELETE_NO", title: "Отмена" },
       ]);
@@ -976,6 +989,7 @@ ${equipmentList.join(", ")}
           console.error("Error deleting record:", error);
           await sendMessage(from, "Ошибка при удалении записи.");
         }
+
         await goToMainMenu(from, session);
         return;
       }
@@ -987,24 +1001,36 @@ ${equipmentList.join(", ")}
       }
     }
 
-    // Menu or help
     if (isCommandKeyword(text)) {
       await showMainMenu(from);
       session.mode = "menu";
       return;
     }
 
-    // Try to parse as single-line input
     const parsed = parseInputLine(text);
 
     if (!parsed) {
-      await sendMessage(from, "❌ Ошибка в формате ввода.\n\nПримечание: Рейс, дата, самолет, аэропорт, инженер - обязательны.\nДля каждого оборудования нужны время начала и окончания (формат ЧЧ:ММ).\n\nПримечание: Разделяйте группы оборудования точкой с запятой (;)\n\nПример:\nTVR4701, 30.04.2026, ER-BAS, DWC, Ernest; PAXSTEP, 10:00, 12:30; GPU, 12:45, 15:20\n\nНапишите 'помощь' для справки.");
+      await sendMessage(from, `❌ Ошибка в формате ввода.
+
+Рейс, дата, самолет, аэропорт, инженер — обязательны.
+Для каждого оборудования нужно минимум время начала.
+Время окончания можно не указывать и добавить позже.
+
+Разделяйте группы оборудования точкой с запятой (;)
+
+Пример с окончанием:
+TVR4701, 30.04.2026, ER-BAS, DWC, Ernest; PAXSTEP, 10:00, 12:30; GPU, 12:45, 15:20
+
+Пример без окончания:
+TVR4701, 30.04.2026, ER-BAS, DWC, Ernest; PAXSTEP, 10:00; GPU, 12:45
+
+Напишите 'помощь' для справки.`);
       return;
     }
 
     try {
       await saveRowsToSheet(parsed.baseData, parsed.equipmentEntries, from);
-      
+
       const preview = `✅ Данные успешно сохранены!
 
 📋 Итоги:
@@ -1016,8 +1042,8 @@ ${equipmentList.join(", ")}
 Вкладка: ${getSheetNameByAircraft(parsed.baseData["Aircraft"])}
 
 🔧 Оборудование (${parsed.equipmentEntries.length}):
-${parsed.equipmentEntries.map((item, i) => 
-  `${i+1}. ${item.equipment}: ${item.timeIn}-${item.timeOut} (${calculateUsage(item.timeIn, item.timeOut)})`
+${parsed.equipmentEntries.map((item, i) =>
+  `${i + 1}. ${item.equipment}: ${item.timeIn}-${item.timeOut || "не окончено"}${item.timeOut ? ` (${calculateUsage(item.timeIn, item.timeOut)})` : ""}`
 ).join("\n")}`;
 
       await sendMessage(from, preview);
