@@ -376,17 +376,22 @@ async function sendMessage(to, text) {
   }
 }
 
-async function sendTypingIndicator(to) {
+async function sendTypingIndicator(messageId) {
   try {
     const token = process.env.WHATSAPP_TOKEN.trim();
     const phoneNumberId = process.env.PHONE_NUMBER_ID.trim();
+
+    if (!messageId) return;
 
     await axios.post(
       `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
       {
         messaging_product: "whatsapp",
-        to,
-        type: "typing"
+        status: "read",
+        message_id: messageId,
+        typing_indicator: {
+          type: "text"
+        }
       },
       {
         headers: {
@@ -691,13 +696,15 @@ app.post("/webhook", async (req, res) => {
 
     const from = message.from;
     const text = extractIncomingText(message);
+    if (!text) return;
 
     // показываем "печатает..."
-    await sendTypingIndicator(from);
+    await sendTypingIndicator(message.id);
+    await new Promise(r => setTimeout(r, 700));
 
     // небольшая задержка чтобы было видно
     await new Promise(r => setTimeout(r, 700));
-    if (!text) return;
+    
 
     // Initialize session if needed
     if (!sessions[from]) {
