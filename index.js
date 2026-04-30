@@ -10,7 +10,6 @@ app.use(express.json());
 const sessions = {};
 const SESSION_TTL = 60 * 60 * 1000; // 1 hour
 
-// Periodically purge stale sessions
 setInterval(() => {
   const now = Date.now();
   for (const phone in sessions) {
@@ -18,14 +17,14 @@ setInterval(() => {
       delete sessions[phone];
     }
   }
-}, 10 * 60 * 1000); // run every 10 minutes
+}, 10 * 60 * 1000);
 
 // =====================
 // Cache & Constants
 // =====================
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL = 5 * 60 * 1000;
 const sheetCache = new Map();
-const commandKeywords = ["menu", "меню", "start", "старт"];
+const commandKeywords = ["menu", "меню", "start", "старт", "помощь", "help"];
 
 // =====================
 // Google Sheet tabs
@@ -67,41 +66,6 @@ const equipmentList = [
 const flightList = [
   "TVR4701", "TVR4702", "TVR4703", "TVR4704",
   "TVR4707", "TVR4716", "TVR4717", "Maintenance"
-];
-
-// Pre-mapped lists to reduce runtime processing
-const flightListMapped = flightList.map((f) => ({
-  id: `FLIGHT_${f}`,
-  title: f,
-}));
-
-const aircraftListMapped = aircraftList.map((a) => ({
-  id: `AIRCRAFT_${a}`,
-  title: a,
-  description: getSheetNameByAircraft(a),
-}));
-
-const airportListMapped = airportList.map((a) => ({
-  id: `AIRPORT_${a}`,
-  title: a,
-}));
-
-// WhatsApp number -> Engineer name
-const engineerByPhone = {
-  "79191534499": "Badrutdinov Ernest",
-  "99364027397": "Yoldashov Rustam",
-};
-
-function getEngineerNameByPhone(phone) {
-  return engineerByPhone[phone] || phone;
-}
-
-const baseFields = [
-  { key: "Flight", label: "Номер рейса" },
-  { key: "Date", label: "Дата" },
-  { key: "Aircraft", label: "Самолёт" },
-  { key: "Airport", label: "Аэропорт" },
-  { key: "Engineer Name", label: "Имя и фамилия инженера" },
 ];
 
 const editableFields = [
@@ -225,7 +189,6 @@ async function saveRowsToSheet(baseData, equipmentEntries, createdBy) {
       requestBody: { values: rows },
     });
 
-    // Invalidate cache after write
     sheetCache.delete(sheetName);
   } catch (error) {
     console.error("Error saving rows to sheet:", error);
@@ -235,7 +198,6 @@ async function saveRowsToSheet(baseData, equipmentEntries, createdBy) {
 
 async function getAllRowsFromSheet(sheetName) {
   try {
-    // Check cache first
     const cached = sheetCache.get(sheetName);
     if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
       return cached.data;
@@ -249,7 +211,6 @@ async function getAllRowsFromSheet(sheetName) {
 
     const data = res.data.values || [];
     
-    // Store in cache
     sheetCache.set(sheetName, {
       data,
       timestamp: Date.now(),
@@ -277,10 +238,8 @@ async function getLast10Rows(createdBy) {
       for (let i = 1; i < item.rows.length; i++) {
         const row = item.rows[i];
 
-        // Column K (index 11) = WhatsApp number of creator
         if (row[11] !== createdBy) continue;
         
-        // Column L (index 12) = created date/time
         const parsedDate = row[12] ? new Date(row[12]) : null;
         const createdAt = (parsedDate && !isNaN(parsedDate))
           ? parsedDate
@@ -316,10 +275,38 @@ async function updateCell(sheetName, rowNumber, columnNumber, value) {
       requestBody: { values: [[value]] },
     });
 
-    // Invalidate cache
     sheetCache.delete(sheetName);
   } catch (error) {
     console.error("Error updating cell:", error);
+    throw error;
+  }
+}
+
+async function deleteRow(sheetName, rowNumber) {
+  try {
+    const sheets = await getSheetsClient();
+    
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: process.env.GOOGLE_SHEET_ID,
+      requestBody: {
+        requests: [
+          {
+            deleteDimension: {
+              range: {
+                sheetId: 0,
+                dimension: "ROWS",
+                startIndex: rowNumber - 1,
+                endIndex: rowNumber,
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    sheetCache.delete(sheetName);
+  } catch (error) {
+    console.error("Error deleting row:", error);
     throw error;
   }
 }
@@ -329,7 +316,6 @@ async function recalculateTotalUsage(sheetName, rowNumber, timeIn, timeOut) {
     let resolvedTimeIn = timeIn;
     let resolvedTimeOut = timeOut;
 
-    // Only fetch from sheet if not provided
     if (resolvedTimeIn === undefined || resolvedTimeOut === undefined) {
       const rows = await getAllRowsFromSheet(sheetName);
       const row = rows[rowNumber - 1];
@@ -373,36 +359,6 @@ async function sendMessage(to, text) {
   } catch (error) {
     console.error("Error sending message:", error.response?.data || error.message);
     throw error;
-  }
-}
-
-async function sendTypingIndicator(messageId) {
-  try {
-    const token = process.env.WHATSAPP_TOKEN.trim();
-    const phoneNumberId = process.env.PHONE_NUMBER_ID.trim();
-
-    if (!messageId) return;
-
-    await axios.post(
-      `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
-      {
-        messaging_product: "whatsapp",
-        status: "read",
-        message_id: messageId,
-        typing_indicator: {
-          type: "text"
-        }
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        timeout: 5000,
-      }
-    );
-  } catch (error) {
-    console.log("Typing indicator not supported:", error.response?.data || error.message);
   }
 }
 
@@ -489,143 +445,61 @@ async function sendList(to, body, buttonText, rows) {
 }
 
 // =====================
-// UI
+// Parse single-line input
 // =====================
-async function showWelcomeMessage(to) {
-  await sendMessage(
-    to,
-    `Здравствуйте! 👋
+function parseInputLine(text) {
+  // Формат: РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР; ОБОРУДОВАНИЕ, ВРЕМЯ_НАЧАЛА, ВРЕМЯ_КОНЦА; ОБОРУДОВАНИЕ2, ВРЕМЯ_НАЧАЛА2, ВРЕМЯ_КОНЦА2; ...
+  // Пример: TVR4701, 30.04.2026, ER-BAS, DWC, Ernest; PAXSTEP, 10:00, 12:30; GPU, 12:45, 15:20
+  
+  const parts = text.split(";").map(p => p.trim());
+  
+  if (parts.length < 1) {
+    return null;
+  }
 
-Этот бот предназначен для внесения данных по наземному оборудованию в Google Sheet.
+  // Parse base data from first part
+  const baseParts = parts[0].split(",").map(p => p.trim());
+  
+  if (baseParts.length < 5) {
+    return null; // Need at least: flight, date, aircraft, airport, engineer
+  }
 
-Что можно делать:
-1. Внести данные — создать новую запись.
-2. Редактировать — изменить свою последнюю запись.
-3. Дополнить — добавить время окончания, если оно было пропущено.
-
-Для возврата в меню в любой момент напишите: menu`
-  );
-}
-
-async function showMainMenu(to) {
-  await sendButtons(to, "Главное меню:", [
-    { id: "ADD", title: "Внести данные" },
-    { id: "EDIT", title: "Редактировать" },
-    { id: "FILL_MISSING", title: "Дополнить" },
-  ]);
-}
-
-async function goToMainMenu(from) {
-  sessions[from] = {
-    mode: "menu",
-    step: 0,
-    baseData: {},
-    equipmentEntries: [],
-    currentEquipment: null,
-    lastActive: Date.now(),
+  const baseData = {
+    "Flight": baseParts[0].toUpperCase(),
+    "Date": baseParts[1],
+    "Aircraft": baseParts[2].toUpperCase(),
+    "Airport": baseParts[3].toUpperCase(),
+    "Engineer Name": baseParts[4],
   };
 
-  await showMainMenu(from);
-}
-
-async function askBaseField(to, session) {
-  const field = baseFields[session.step];
-
-  if (field.key === "Flight") {
-    const rows = [...flightListMapped, { id: "FLIGHT_MANUAL", title: "Ввести вручную" }];
-    await sendList(to, "Выберите номер рейса:", "Выбрать", rows);
-    return;
+  // Validate base data
+  if (!baseData["Flight"] || !baseData["Date"] || !baseData["Aircraft"] || !baseData["Airport"]) {
+    return null;
   }
 
-  if (field.key === "Date") {
-    await sendButtons(to, "Выберите дату:", [
-      { id: "DATE_TODAY", title: "Сегодня" },
-      { id: "DATE_MANUAL", title: "Ввести дату" },
-      { id: "MAIN_MENU", title: "Главное меню" },
-    ]);
-    return;
+  // Parse equipment entries (starting from part 1)
+  const equipmentEntries = [];
+  for (let i = 1; i < parts.length; i++) {
+    const equipParts = parts[i].split(",").map(p => p.trim());
+    
+    if (equipParts.length < 3) continue; // Need: equipment, timeIn, timeOut
+    
+    const equipment = equipParts[0].toUpperCase();
+    const timeIn = equipParts[1];
+    const timeOut = equipParts[2];
+
+    if (!equipment || !isValidTime(timeIn) || !isValidTime(timeOut)) {
+      return null;
+    }
+
+    equipmentEntries.push({ equipment, timeIn, timeOut });
   }
 
-  if (field.key === "Aircraft") {
-    await sendList(to, "Выберите самолёт:", "Выбрать", aircraftListMapped);
-    return;
+  if (equipmentEntries.length === 0) {
+    return null;
   }
 
-  if (field.key === "Airport") {
-    const rows = [...airportListMapped, { id: "AIRPORT_MANUAL", title: "Ввести вручную" }];
-    await sendList(to, "Выберите аэропорт:", "Выбрать", rows);
-    return;
-  }
-
-  if (field.key === "Engineer Name") {
-    await sendMessage(to, "Введите имя и фамилию инженера:");
-    return;
-  }
-
-  await sendMessage(to, `Введите: ${field.label}`);
-}
-
-async function askEquipment(to, session) {
-  const selected = (session.equipmentEntries || []).map((item) => item.equipment);
-  const available = equipmentList.filter((e) => !selected.includes(e));
-
-  if (available.length === 0) {
-    session.mode = "confirm";
-
-    await sendButtons(to, `${buildPreview(session.baseData, session.equipmentEntries)}
-
-Все виды оборудования уже выбраны.
-
-Сохранить?`, [
-      { id: "SAVE_YES", title: "Да" },
-      { id: "SAVE_NO", title: "Нет" },
-      { id: "MAIN_MENU", title: "Главное меню" },
-    ]);
-
-    return;
-  }
-
-  const rows = available.map((e) => ({
-    id: `EQUIPMENT_${e}`,
-    title: e,
-  }));
-
-  rows.push({ id: "EQUIPMENT_MANUAL", title: "Ввести вручную" });
-
-  await sendList(to, "Выберите наземное оборудование:", "Выбрать", rows);
-}
-
-function buildPreview(baseData, equipmentEntries) {
-  const equipmentText = equipmentEntries.map((item, index) => {
-    const total = calculateUsage(item.timeIn, item.timeOut);
-
-    return `${index + 1}. ${item.equipment}
-Начало: ${item.timeIn || ""}
-Окончание: ${item.timeOut || "не указано"}
-Общее время: ${total || "будет позже"}`;
-  }).join("\n\n");
-
-  return `Проверьте данные:
-
-Номер рейса: ${baseData["Flight"] || ""}
-Дата: ${baseData["Date"] || ""}
-Самолёт: ${baseData["Aircraft"] || ""}
-Аэропорт: ${baseData["Airport"] || ""}
-Имя инженера: ${baseData["Engineer Name"] || ""}
-Вкладка: ${getSheetNameByAircraft(baseData["Aircraft"])}
-
-Оборудование:
-${equipmentText}`;
-}
-
-async function finishBaseFlow(from, session) {
-  if (session.step < baseFields.length) {
-    await askBaseField(from, session);
-    return;
-  }
-
-  session.mode = "equipment_choose";
-  await askEquipment(from, session);
+  return { baseData, equipmentEntries };
 }
 
 function getColumnByField(fieldKey) {
@@ -648,42 +522,6 @@ app.get("/webhook", (req, res) => {
   res.sendStatus(403);
 });
 
-async function showMissingRecords(from, session) {
-  try {
-    const rows = await getLast10Rows(from);
-
-    const missing = rows.filter((item) => {
-      const row = item.row;
-      return row[3] && !row[4];
-    });
-
-    if (missing.length === 0) {
-      await sendMessage(from, "Незаполненных записей среди последних 10 записей нет.");
-      await goToMainMenu(from);
-      return;
-    }
-
-    session.mode = "missing_choose_record";
-    session.missing = missing;
-
-    const listRows = missing.slice(0, 10).map((item, index) => ({
-      id: `MISSING_RECORD_${index}`,
-      title: short(`${item.row[2]} ${item.row[3]}`, 24),
-      description: short(`Борт: ${item.row[6] || ""} | ${item.row[3] || ""}-${item.row[4] || "не окончено"} | ${item.row[7] || ""}`, 72),
-    }));
-
-    await sendList(
-      from,
-      "Выберите оборудование, где не заполнено время окончания:",
-      "Выбрать",
-      listRows
-    );
-  } catch (error) {
-    console.error("Error showing missing records:", error);
-    await sendMessage(from, "Ошибка при загрузке записей. Напишите menu.");
-  }
-}
-
 // =====================
 // Main webhook
 // =====================
@@ -698,424 +536,164 @@ app.post("/webhook", async (req, res) => {
     const text = extractIncomingText(message);
     if (!text) return;
 
-    // показываем "печатает..."
-    await sendTypingIndicator(message.id);
-    await new Promise(r => setTimeout(r, 700));
-
-    // небольшая задержка чтобы было видно
-    await new Promise(r => setTimeout(r, 700));
-    
-
     // Initialize session if needed
     if (!sessions[from]) {
       sessions[from] = {
         mode: "menu",
-        step: 0,
-        baseData: {},
-        equipmentEntries: [],
-        currentEquipment: null,
         lastActive: Date.now(),
       };
-
-      // Check for menu command on first message
-      if (isCommandKeyword(text)) {
-        await showMainMenu(from);
-      }
-      return;
     }
 
     const session = sessions[from];
     session.lastActive = Date.now();
 
-    // Global menu command check
-    if (text === "MAIN_MENU" || isCommandKeyword(text)) {
-      await goToMainMenu(from);
+    // Help command
+    if (text.toLowerCase() === "помощь" || text.toLowerCase() === "help") {
+      await sendMessage(from, `📖 СПРАВКА ПО ИСПОЛЬЗОВАНИЮ
+
+Формат ввода данных:
+РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР; ОБОРУДОВАНИЕ, ВРЕМЯ_НАЧАЛА, ВРЕМЯ_КОНЦА; ОБОРУДОВАНИЕ2, ВРЕМЯ_НАЧАЛА2, ВРЕМЯ_КОНЦА2; ...
+
+Пример:
+TVR4701, 30.04.2026, ER-BAS, DWC, Ernest; PAXSTEP, 10:00, 12:30; GPU, 12:45, 15:20
+
+Допустимые самолеты:
+${aircraftList.join(", ")}
+
+Допустимые аэропорты:
+${airportList.join(", ")}
+
+Допустимое оборудование:
+${equipmentList.join(", ")}
+
+Команды:
+menu - главное меню
+список - показать последние 10 записей
+редакт - редактирование записи
+удалить - удаление записи
+помощь - эта справка`);
       return;
     }
 
-    if (text === "FILL_MISSING") {
-      await showMissingRecords(from, session);
-      return;
-    }
+    // List records command
+    if (text.toLowerCase() === "список") {
+      try {
+        const found = await getLast10Rows(from);
 
-    // Menu mode
-    if (session.mode === "menu") {
-      if (text === "ADD") {
-        session.mode = "base";
-        session.step = 0;
-        session.baseData = {};
-        session.equipmentEntries = [];
-        session.currentEquipment = null;
-
-        await askBaseField(from, session);
-        return;
-      }
-
-      if (text === "EDIT") {
-        try {
-          const found = await getLast10Rows(from);
-
-          if (found.length === 0) {
-            await sendMessage(from, "Последние записи не найдены.");
-            await showMainMenu(from);
-            return;
-          }
-
-          session.mode = "edit_choose_record";
-          session.found = found;
-
-          const listRows = found.slice(0, 10).map((item, index) => ({
-            id: `EDIT_RECORD_${index}`,
-            title: short(`${item.row[0]} ${item.row[2]}`, 24),
-            description: short(`Борт: ${item.row[6] || ""} | ${item.row[3] || ""}-${item.row[4] || "не окончено"} | ${item.row[7] || ""}`, 72),
-          }));
-
-          await sendList(from, "Последние 10 записей:", "Выбрать", listRows);
-        } catch (error) {
-          console.error("Error in EDIT mode:", error);
-          await sendMessage(from, "Ошибка при загрузке записей.");
-          await showMainMenu(from);
-        }
-        return;
-      }
-
-      await showMainMenu(from);
-      return;
-    }
-
-    // Base data collection mode
-    if (session.mode === "base") {
-      const field = baseFields[session.step];
-
-      if (text.startsWith("FLIGHT_")) {
-        const flight = text.replace("FLIGHT_", "");
-
-        if (flight === "MANUAL") {
-          session.mode = "base_manual_flight";
-          await sendMessage(from, "Введите номер рейса вручную:");
+        if (found.length === 0) {
+          await sendMessage(from, "У вас нет записей.");
           return;
         }
 
-        session.baseData["Flight"] = flight;
-        session.step++;
-        await finishBaseFlow(from, session);
-        return;
+        const listRows = found.map((item, index) => ({
+          id: `VIEW_RECORD_${index}`,
+          title: short(`${item.row[0]} ${item.row[1]}`, 24),
+          description: short(`Борт: ${item.row[6] || ""} | ${item.row[2] || ""} | ${item.row[3] || ""}-${item.row[4] || "не окончено"}`, 72),
+        }));
+
+        session.mode = "view_records";
+        session.records = found;
+
+        await sendList(from, "Ваши последние 10 записей:", "Выбрать", listRows);
+      } catch (error) {
+        console.error("Error listing records:", error);
+        await sendMessage(from, "Ошибка при загрузке записей.");
       }
-
-      if (text === "DATE_TODAY") {
-        session.baseData["Date"] = todayDate();
-      } else if (text === "DATE_MANUAL") {
-        session.mode = "base_manual_date";
-        await sendMessage(from, "Введите дату вручную, например 27.04.2026:");
-        return;
-      } else if (text.startsWith("AIRCRAFT_")) {
-        session.baseData["Aircraft"] = text.replace("AIRCRAFT_", "");
-      } else if (text.startsWith("AIRPORT_")) {
-        const airport = text.replace("AIRPORT_", "");
-
-        if (airport === "MANUAL") {
-          session.mode = "base_manual_airport";
-          await sendMessage(from, "Введите аэропорт вручную:");
-          return;
-        }
-
-        session.baseData["Airport"] = airport;
-      } else {
-        session.baseData[field.key] = text;
-      }
-
-      session.step++;
-      await finishBaseFlow(from, session);
       return;
     }
 
-    if (session.mode === "base_manual_flight") {
-      session.baseData["Flight"] = text.toUpperCase();
-      session.mode = "base";
-      session.step++;
-      await finishBaseFlow(from, session);
-      return;
-    }
+    // View record details
+    if (session.mode === "view_records" && text.startsWith("VIEW_RECORD_")) {
+      const index = Number(text.replace("VIEW_RECORD_", ""));
 
-    if (session.mode === "base_manual_date") {
-      session.baseData["Date"] = text;
-      session.mode = "base";
-      session.step++;
-      await finishBaseFlow(from, session);
-      return;
-    }
-
-    if (session.mode === "base_manual_airport") {
-      session.baseData["Airport"] = text.toUpperCase();
-      session.mode = "base";
-      session.step++;
-      await finishBaseFlow(from, session);
-      return;
-    }
-
-    // Equipment selection and time entry
-    if (session.mode === "equipment_choose") {
-      let equipment = "";
-
-      if (text.startsWith("EQUIPMENT_")) {
-        equipment = text.replace("EQUIPMENT_", "");
-
-        if (equipment === "MANUAL") {
-          session.mode = "equipment_manual";
-          await sendMessage(from, "Введите название оборудования вручную:");
-          return;
-        }
-      } else {
-        equipment = text.toUpperCase();
-      }
-
-      session.currentEquipment = {
-        equipment,
-        timeIn: "",
-        timeOut: "",
-      };
-
-      session.mode = "equipment_time_in";
-      await sendMessage(from, `Введите время начала использования для ${equipment}, например 10:20:`);
-      return;
-    }
-
-    if (session.mode === "equipment_manual") {
-      const equipment = text.toUpperCase();
-
-      session.currentEquipment = {
-        equipment,
-        timeIn: "",
-        timeOut: "",
-      };
-
-      session.mode = "equipment_time_in";
-      await sendMessage(from, `Введите время начала использования для ${equipment}, например 10:20:`);
-      return;
-    }
-
-    if (session.mode === "equipment_time_in") {
-      if (!isValidTime(text)) {
-        await sendMessage(from, "Неверный формат. Введите время как 10:20:");
-        return;
-      }
-      session.currentEquipment.timeIn = text;
-
-      session.mode = "equipment_time_out_choice";
-      await sendButtons(from, `Время окончания для ${session.currentEquipment.equipment}:`, [
-        { id: "TIME_OUT_ENTER", title: "Ввести" },
-        { id: "TIME_OUT_SKIP", title: "Пропустить" },
-        { id: "MAIN_MENU", title: "Главное меню" },
-      ]);
-      return;
-    }
-
-    if (session.mode === "equipment_time_out_choice") {
-      if (text === "TIME_OUT_SKIP") {
-        session.currentEquipment.timeOut = "";
-        session.equipmentEntries.push(session.currentEquipment);
-        session.currentEquipment = null;
-
-        session.mode = "add_more_equipment";
-        await sendButtons(from, "Добавить ещё оборудование?", [
-          { id: "ADD_MORE_YES", title: "Да" },
-          { id: "ADD_MORE_NO", title: "Нет" },
-          { id: "MAIN_MENU", title: "Главное меню" },
-        ]);
+      if (isNaN(index) || !session.records || !session.records[index]) {
+        await sendMessage(from, "Запись не найдена.");
         return;
       }
 
-      if (text === "TIME_OUT_ENTER") {
-        session.mode = "equipment_time_out_enter";
-        await sendMessage(from, "Введите время окончания, например 12:45:");
-        return;
-      }
+      const record = session.records[index];
+      const row = record.row;
 
-      await sendButtons(from, "Выберите действие:", [
-        { id: "TIME_OUT_ENTER", title: "Ввести" },
-        { id: "TIME_OUT_SKIP", title: "Пропустить" },
-        { id: "MAIN_MENU", title: "Главное меню" },
-      ]);
-      return;
-    }
+      const details = `📋 Детали записи:
 
-    if (session.mode === "equipment_time_out_enter") {
-      if (!isValidTime(text)) {
-        await sendMessage(from, "Неверный формат. Введите время как 12:45:");
-        return;
-      }
-      session.currentEquipment.timeOut = text;
-      session.equipmentEntries.push(session.currentEquipment);
-      session.currentEquipment = null;
-
-      session.mode = "add_more_equipment";
-      await sendButtons(from, "Добавить ещё оборудование?", [
-        { id: "ADD_MORE_YES", title: "Да" },
-        { id: "ADD_MORE_NO", title: "Нет" },
-        { id: "MAIN_MENU", title: "Главное меню" },
-      ]);
-      return;
-    }
-
-    if (session.mode === "add_more_equipment") {
-      if (text === "ADD_MORE_YES") {
-        session.mode = "equipment_choose";
-        await askEquipment(from, session);
-        return;
-      }
-
-      if (text === "ADD_MORE_NO") {
-        session.mode = "confirm";
-
-        await sendButtons(from, `${buildPreview(session.baseData, session.equipmentEntries)}
-
-Сохранить?`, [
-          { id: "SAVE_YES", title: "Да" },
-          { id: "SAVE_NO", title: "Нет" },
-          { id: "MAIN_MENU", title: "Главное меню" },
-        ]);
-        return;
-      }
-
-      await sendButtons(from, "Добавить ещё оборудование?", [
-        { id: "ADD_MORE_YES", title: "Да" },
-        { id: "ADD_MORE_NO", title: "Нет" },
-        { id: "MAIN_MENU", title: "Главное меню" },
-      ]);
-      return;
-    }
-
-    if (session.mode === "confirm") {
-      if (text === "SAVE_YES") {
-        if (!session.equipmentEntries || session.equipmentEntries.length === 0) {
-          await sendMessage(from, "Нет оборудования для сохранения.");
-          await goToMainMenu(from);
-          return;
-        }
-
-        try {
-          const hasMissingTimeOut = session.equipmentEntries.some((item) => !item.timeOut);
-
-          await saveRowsToSheet(session.baseData, session.equipmentEntries, from);
-          await sendMessage(from, `Данные сохранены. Вкладка: ${getSheetNameByAircraft(session.baseData["Aircraft"])}.`);
-
-          if (hasMissingTimeOut) {
-            await sendButtons(from, "Есть незаполненное время окончания.", [
-              { id: "FILL_MISSING", title: "Ввести данные" },
-              { id: "MAIN_MENU", title: "Главное меню" },
-            ]);
-            return;
-          }
-
-          await goToMainMenu(from);
-        } catch (error) {
-          console.error("Error saving data:", error);
-          await sendMessage(from, "Ошибка при сохранении. Попробуйте позже.");
-          await goToMainMenu(from);
-        }
-        return;
-      }
-
-      if (text === "SAVE_NO") {
-        await sendMessage(from, "Запись отменена.");
-        await goToMainMenu(from);
-        return;
-      }
-
-      await sendButtons(from, "Сохранить?", [
-        { id: "SAVE_YES", title: "Да" },
-        { id: "SAVE_NO", title: "Нет" },
-        { id: "MAIN_MENU", title: "Главное меню" },
-      ]);
-      return;
-    }
-
-    if (session.mode === "missing_choose_record") {
-      const index = Number(text.replace("MISSING_RECORD_", ""));
-
-      if (isNaN(index) || !session.missing || !session.missing[index]) {
-        await sendMessage(from, "Запись не найдена. Напишите menu.");
-        return;
-      }
-
-      session.missingRecord = session.missing[index];
-      session.mode = "missing_enter_time_out";
-
-      const row = session.missingRecord.row;
-
-      await sendMessage(from, `Вы выбрали:
-Вкладка: ${session.missingRecord.sheetName}
-Оборудование: ${row[2] || ""}
 Рейс: ${row[0] || ""}
 Дата: ${row[1] || ""}
+Оборудование: ${row[2] || ""}
 Начало: ${row[3] || ""}
-Борт: ${row[7] || ""}
-Аэропорт: ${row[8] || ""}
+Окончание: ${row[4] || ""}
+Время: ${row[5] || ""}
+Борт: ${row[6] || ""}
+Аэропорт: ${row[7] || ""}
+Инженер: ${row[8] || ""}
+Вкладка: ${record.sheetName}`;
 
-Введите время окончания, например 12:45:`);
-
+      await sendMessage(from, details);
+      session.mode = "menu";
       return;
     }
 
-    if (session.mode === "missing_enter_time_out") {
-      if (!isValidTime(text)) {
-        await sendMessage(from, "Неверный формат. Введите время как 12:45:");
-        return;
-      }
+    // Edit command
+    if (text.toLowerCase() === "редакт" || text.toLowerCase() === "edit") {
       try {
-        const sheetName = session.missingRecord.sheetName;
-        const rowNumber = session.missingRecord.rowNumber;
+        const found = await getLast10Rows(from);
 
-        await updateCell(sheetName, rowNumber, 5, text);
-        await recalculateTotalUsage(sheetName, rowNumber, session.missingRecord.row[3], text);
+        if (found.length === 0) {
+          await sendMessage(from, "У вас нет записей для редактирования.");
+          return;
+        }
 
-        await sendMessage(from, "Время окончания добавлено. Общее время пересчитано.");
-        await goToMainMenu(from);
+        session.mode = "edit_choose_record";
+        session.records = found;
+
+        const listRows = found.map((item, index) => ({
+          id: `EDIT_RECORD_${index}`,
+          title: short(`${item.row[0]} ${item.row[1]}`, 24),
+          description: short(`Борт: ${item.row[6] || ""} | ${item.row[2] || ""} | ${item.row[3] || ""}-${item.row[4] || ""}`, 72),
+        }));
+
+        await sendList(from, "Выберите запись для редактирования:", "Выбрать", listRows);
       } catch (error) {
-        console.error("Error updating missing time:", error);
-        await sendMessage(from, "Ошибка при обновлении. Попробуйте позже.");
-        await goToMainMenu(from);
+        console.error("Error in EDIT mode:", error);
+        await sendMessage(from, "Ошибка при загрузке записей.");
       }
       return;
     }
 
-    if (session.mode === "edit_choose_record") {
+    if (session.mode === "edit_choose_record" && text.startsWith("EDIT_RECORD_")) {
       const index = Number(text.replace("EDIT_RECORD_", ""));
 
-      if (isNaN(index) || !session.found || !session.found[index]) {
-        await sendMessage(from, "Запись не найдена. Напишите menu.");
+      if (isNaN(index) || !session.records || !session.records[index]) {
+        await sendMessage(from, "Запись не найдена.");
         return;
       }
 
-      session.editRecord = session.found[index];
+      session.editRecord = session.records[index];
       session.mode = "edit_choose_field";
 
       await sendList(
         from,
-        `Что изменить?
-Борт: ${session.editRecord.row[6] || ""}
-Вкладка: ${session.editRecord.sheetName}`,
+        `Что изменить? (Борт: ${session.editRecord.row[6] || ""})`,
         "Выбрать поле",
         editableFields.map((f, i) => ({
           id: `EDIT_FIELD_${i}`,
-          title: short(f.label),
+          title: f.label,
         }))
       );
-
       return;
     }
 
-    if (session.mode === "edit_choose_field") {
+    if (session.mode === "edit_choose_field" && text.startsWith("EDIT_FIELD_")) {
       const fieldIndex = Number(text.replace("EDIT_FIELD_", ""));
 
       if (isNaN(fieldIndex) || !editableFields[fieldIndex]) {
-        await sendMessage(from, "Поле не найдено. Попробуйте снова или напишите menu.");
+        await sendMessage(from, "Поле не найдено.");
         return;
       }
 
       session.editField = editableFields[fieldIndex];
+      const currentValue = session.editRecord.row[session.editField.col - 1] || "";
 
-      await sendMessage(from, `Введите новое значение: ${session.editField.label}`);
+      await sendMessage(from, `Текущее значение: ${currentValue}\n\nВведите новое значение для: ${session.editField.label}`);
       session.mode = "edit_enter_value";
       return;
     }
@@ -1127,12 +705,13 @@ app.post("/webhook", async (req, res) => {
         const columnNumber = getColumnByField(session.editField.key);
 
         if (!columnNumber) {
-          await sendMessage(from, "Ошибка выбора колонки. Напишите menu.");
+          await sendMessage(from, "Ошибка выбора колонки.");
           return;
         }
 
         await updateCell(sheetName, rowNumber, columnNumber, text);
 
+        // Recalculate if time was changed
         if (session.editField.key === "Time in" || session.editField.key === "Time out") {
           const row = session.editRecord.row;
           const newTimeIn = session.editField.key === "Time in" ? text : row[3];
@@ -1140,19 +719,147 @@ app.post("/webhook", async (req, res) => {
           await recalculateTotalUsage(sheetName, rowNumber, newTimeIn, newTimeOut);
         }
 
-        await sendMessage(from, "Запись обновлена.");
-        await goToMainMenu(from);
+        await sendMessage(from, "✅ Запись обновлена.");
+        session.mode = "menu";
       } catch (error) {
         console.error("Error updating record:", error);
-        await sendMessage(from, "Ошибка при обновлении. Попробуйте позже.");
-        await goToMainMenu(from);
+        await sendMessage(from, "Ошибка при обновлении.");
+        session.mode = "menu";
       }
       return;
     }
 
-    // ✅ Proper error handling - don't break the flow
-    console.warn(`Unexpected input in mode "${session.mode}": "${text}"`);
-    await sendMessage(from, "Не понимаю. Напишите 'menu' для возврата в главное меню.");
+    // Delete command
+    if (text.toLowerCase() === "удалить" || text.toLowerCase() === "delete") {
+      try {
+        const found = await getLast10Rows(from);
+
+        if (found.length === 0) {
+          await sendMessage(from, "У вас нет записей для удаления.");
+          return;
+        }
+
+        session.mode = "delete_choose_record";
+        session.records = found;
+
+        const listRows = found.map((item, index) => ({
+          id: `DELETE_RECORD_${index}`,
+          title: short(`${item.row[0]} ${item.row[1]}`, 24),
+          description: short(`Борт: ${item.row[6] || ""} | ${item.row[2] || ""} | ${item.row[3] || ""}-${item.row[4] || ""}`, 72),
+        }));
+
+        await sendList(from, "Выберите запись для удаления:", "Выбрать", listRows);
+      } catch (error) {
+        console.error("Error in DELETE mode:", error);
+        await sendMessage(from, "Ошибка при загрузке записей.");
+      }
+      return;
+    }
+
+    if (session.mode === "delete_choose_record" && text.startsWith("DELETE_RECORD_")) {
+      const index = Number(text.replace("DELETE_RECORD_", ""));
+
+      if (isNaN(index) || !session.records || !session.records[index]) {
+        await sendMessage(from, "Запись не найдена.");
+        return;
+      }
+
+      session.deleteRecord = session.records[index];
+      session.mode = "delete_confirm";
+
+      const row = session.deleteRecord.row;
+      await sendButtons(from, `Удалить эту запись?
+Рейс: ${row[0]}
+Дата: ${row[1]}
+Оборудование: ${row[2]}
+Время: ${row[3]}-${row[4]}`, [
+        { id: "DELETE_YES", title: "Да, удалить" },
+        { id: "DELETE_NO", title: "Отмена" },
+      ]);
+      return;
+    }
+
+    if (session.mode === "delete_confirm") {
+      if (text === "DELETE_YES") {
+        try {
+          const sheetName = session.deleteRecord.sheetName;
+          const rowNumber = session.deleteRecord.rowNumber;
+
+          await deleteRow(sheetName, rowNumber);
+          await sendMessage(from, "✅ Запись удалена.");
+        } catch (error) {
+          console.error("Error deleting record:", error);
+          await sendMessage(from, "Ошибка при удалении записи.");
+        }
+        session.mode = "menu";
+        return;
+      }
+
+      if (text === "DELETE_NO") {
+        await sendMessage(from, "Удаление отменено.");
+        session.mode = "menu";
+        return;
+      }
+    }
+
+    // Menu or help
+    if (isCommandKeyword(text)) {
+      await sendMessage(from, `Здравствуйте! 👋
+
+Бот для внесения данных по наземному оборудованию.
+
+Введите все данные в одну строку в формате:
+РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР; ОБОРУДОВАНИЕ, ВРЕМЯ_НАЧАЛА, ВРЕМЯ_КОНЦА; ОБОРУДОВАНИЕ2, ВРЕМЯ_НАЧАЛА2, ВРЕМЯ_КОНЦА2; ...
+
+Пример:
+TVR4701, 30.04.2026, ER-BAS, DWC, Ernest; PAXSTEP, 10:00, 12:30; GPU, 12:45, 15:20
+
+Команды:
+список - показать последние записи
+редакт - редактировать запись
+удалить - удалить запись
+помощь - справка
+
+Допустимые значения:
+Самолеты: ${aircraftList.join(", ")}
+Аэропорты: ${airportList.join(", ")}
+Оборудование: ${equipmentList.join(", ")}`);
+      session.mode = "menu";
+      return;
+    }
+
+    // Try to parse as single-line input
+    const parsed = parseInputLine(text);
+
+    if (!parsed) {
+      await sendMessage(from, "❌ Ошибка в формате ввода.\n\nПримечание: Рейс, дата, самолет, аэропорт, инженер - обязательны.\nДля каждого оборудования нужны время начала и окончания (формат ЧЧ:ММ).\n\nПримечание: Разделяйте группы оборудования точкой с запятой (;)\n\nПример:\nTVR4701, 30.04.2026, ER-BAS, DWC, Ernest; PAXSTEP, 10:00, 12:30; GPU, 12:45, 15:20\n\nНапишите 'помощь' для справки.");
+      return;
+    }
+
+    try {
+      await saveRowsToSheet(parsed.baseData, parsed.equipmentEntries, from);
+      
+      const preview = `✅ Данные успешно сохранены!
+
+📋 Итоги:
+Рейс: ${parsed.baseData["Flight"]}
+Дата: ${parsed.baseData["Date"]}
+Самолет: ${parsed.baseData["Aircraft"]}
+Аэропорт: ${parsed.baseData["Airport"]}
+Инженер: ${parsed.baseData["Engineer Name"]}
+Вкладка: ${getSheetNameByAircraft(parsed.baseData["Aircraft"])}
+
+🔧 Оборудование (${parsed.equipmentEntries.length}):
+${parsed.equipmentEntries.map((item, i) => 
+  `${i+1}. ${item.equipment}: ${item.timeIn}-${item.timeOut} (${calculateUsage(item.timeIn, item.timeOut)})`
+).join("\n")}`;
+
+      await sendMessage(from, preview);
+      session.mode = "menu";
+    } catch (error) {
+      console.error("Error saving data:", error);
+      await sendMessage(from, "Ошибка при сохранении данных. Попробуйте позже.");
+    }
   } catch (error) {
     console.error("ERROR:", error.response?.data || error.message);
   }
