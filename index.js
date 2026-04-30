@@ -160,6 +160,20 @@ async function getSheetsClient() {
   return google.sheets({ version: "v4", auth });
 }
 
+async function getSheetIdByName(sheetName) {
+  try {
+    const sheets = await getSheetsClient();
+    const res = await sheets.spreadsheets.get({
+      spreadsheetId: process.env.GOOGLE_SHEET_ID,
+    });
+    const sheet = res.data.sheets.find(s => s.properties.title === sheetName);
+    return sheet?.properties.sheetId || 0;
+  } catch (error) {
+    console.error("Error getting sheet ID:", error);
+    return 0;
+  }
+}
+
 async function saveRowsToSheet(baseData, equipmentEntries, createdBy) {
   try {
     const sheets = await getSheetsClient();
@@ -285,6 +299,7 @@ async function updateCell(sheetName, rowNumber, columnNumber, value) {
 async function deleteRow(sheetName, rowNumber) {
   try {
     const sheets = await getSheetsClient();
+    const sheetId = await getSheetIdByName(sheetName);
     
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId: process.env.GOOGLE_SHEET_ID,
@@ -293,7 +308,7 @@ async function deleteRow(sheetName, rowNumber) {
           {
             deleteDimension: {
               range: {
-                sheetId: 0,
+                sheetId: sheetId,
                 dimension: "ROWS",
                 startIndex: rowNumber - 1,
                 endIndex: rowNumber,
@@ -445,6 +460,27 @@ async function sendList(to, body, buttonText, rows) {
 }
 
 // =====================
+// Menu functions
+// =====================
+async function showMainMenu(to) {
+  await sendButtons(to, "🏠 Главное меню:", [
+    { id: "BTN_ADD", title: "➕ Добавить запись" },
+    { id: "BTN_LIST", title: "📋 Мои записи" },
+    { id: "BTN_EDIT", title: "✏️ Редактировать" },
+    { id: "BTN_DELETE", title: "🗑️ Удалить" },
+    { id: "BTN_HELP", title: "❓ Справка" },
+  ]);
+}
+
+async function goToMainMenu(from, session) {
+  session.mode = "menu";
+  session.records = null;
+  session.editRecord = null;
+  session.deleteRecord = null;
+  await showMainMenu(from);
+}
+
+// =====================
 // Parse single-line input
 // =====================
 function parseInputLine(text) {
@@ -473,7 +509,10 @@ function parseInputLine(text) {
   };
 
   // Validate base data
-  if (!baseData["Flight"] || !baseData["Date"] || !baseData["Aircraft"] || !baseData["Airport"]) {
+  if (!aircraftList.includes(baseData["Aircraft"])) {
+    return null;
+  }
+  if (!airportList.includes(baseData["Airport"])) {
     return null;
   }
 
@@ -542,10 +581,136 @@ app.post("/webhook", async (req, res) => {
         mode: "menu",
         lastActive: Date.now(),
       };
+      await showMainMenu(from);
+      return;
     }
 
     const session = sessions[from];
     session.lastActive = Date.now();
+
+    // =====================
+    // Button handlers
+    // =====================
+    
+    // Main menu buttons
+    if (text === "BTN_ADD") {
+      await sendMessage(from, `Введите данные в одну строку в формате:
+РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР; ОБОРУДОВАНИЕ, ВРЕМЯ_НАЧАЛА, ВРЕМЯ_КОНЦА; ОБОРУДОВАНИЕ2, ВРЕМЯ_НАЧАЛА2, ВРЕМЯ_КОНЦА2; ...
+
+Пример:
+TVR4701, 30.04.2026, ER-BAS, DWC, Ernest; PAXSTEP, 10:00, 12:30; GPU, 12:45, 15:20`);
+      session.mode = "menu";
+      return;
+    }
+
+    if (text === "BTN_LIST") {
+      try {
+        const found = await getLast10Rows(from);
+
+        if (found.length === 0) {
+          await sendMessage(from, "У вас нет записей.");
+          await goToMainMenu(from, session);
+          return;
+        }
+
+        const listRows = found.map((item, index) => ({
+          id: `VIEW_RECORD_${index}`,
+          title: short(`${item.row[0]} ${item.row[1]}`, 24),
+          description: short(`Борт: ${item.row[6] || ""} | ${item.row[2] || ""} | ${item.row[3] || ""}-${item.row[4] || "не окончено"}`, 72),
+        }));
+
+        session.mode = "view_records";
+        session.records = found;
+
+        await sendList(from, "Ваши последние 10 записей:", "Выбрать", listRows);
+      } catch (error) {
+        console.error("Error listing records:", error);
+        await sendMessage(from, "Ошибка при загрузке записей.");
+        await goToMainMenu(from, session);
+      }
+      return;
+    }
+
+    if (text === "BTN_EDIT") {
+      try {
+        const found = await getLast10Rows(from);
+
+        if (found.length === 0) {
+          await sendMessage(from, "У вас нет записей для редактирования.");
+          await goToMainMenu(from, session);
+          return;
+        }
+
+        session.mode = "edit_choose_record";
+        session.records = found;
+
+        const listRows = found.map((item, index) => ({
+          id: `EDIT_RECORD_${index}`,
+          title: short(`${item.row[0]} ${item.row[1]}`, 24),
+          description: short(`Борт: ${item.row[6] || ""} | ${item.row[2] || ""} | ${item.row[3] || ""}-${item.row[4] || ""}`, 72),
+        }));
+
+        await sendList(from, "Выберите запись для редактирования:", "Выбрать", listRows);
+      } catch (error) {
+        console.error("Error in EDIT mode:", error);
+        await sendMessage(from, "Ошибка при загрузке записей.");
+        await goToMainMenu(from, session);
+      }
+      return;
+    }
+
+    if (text === "BTN_DELETE") {
+      try {
+        const found = await getLast10Rows(from);
+
+        if (found.length === 0) {
+          await sendMessage(from, "У вас нет записей для удаления.");
+          await goToMainMenu(from, session);
+          return;
+        }
+
+        session.mode = "delete_choose_record";
+        session.records = found;
+
+        const listRows = found.map((item, index) => ({
+          id: `DELETE_RECORD_${index}`,
+          title: short(`${item.row[0]} ${item.row[1]}`, 24),
+          description: short(`Борт: ${item.row[6] || ""} | ${item.row[2] || ""} | ${item.row[3] || ""}-${item.row[4] || ""}`, 72),
+        }));
+
+        await sendList(from, "Выберите запись для удаления:", "Выбрать", listRows);
+      } catch (error) {
+        console.error("Error in DELETE mode:", error);
+        await sendMessage(from, "Ошибка при загрузке записей.");
+        await goToMainMenu(from, session);
+      }
+      return;
+    }
+
+    if (text === "BTN_HELP") {
+      await sendMessage(from, `📖 СПРАВКА ПО ИСПОЛЬЗОВАНИЮ
+
+Формат ввода данных:
+РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР; ОБОРУДОВАНИЕ, ВРЕМЯ_НАЧАЛА, ВРЕМЯ_КОНЦА; ОБОРУДОВАНИЕ2, ВРЕМЯ_НАЧАЛА2, ВРЕМЯ_КОНЦА2; ...
+
+Пример:
+TVR4701, 30.04.2026, ER-BAS, DWC, Ernest; PAXSTEP, 10:00, 12:30; GPU, 12:45, 15:20
+
+Допустимые самолеты:
+${aircraftList.join(", ")}
+
+Допустимые аэропорты:
+${airportList.join(", ")}
+
+Допустимое оборудование:
+${equipmentList.join(", ")}`);
+      await goToMainMenu(from, session);
+      return;
+    }
+
+    // =====================
+    // Command handlers (text)
+    // =====================
 
     // Help command
     if (text.toLowerCase() === "помощь" || text.toLowerCase() === "help") {
@@ -567,11 +732,12 @@ ${airportList.join(", ")}
 ${equipmentList.join(", ")}
 
 Команды:
-menu - главное меню
+меню - главное меню
 список - показать последние 10 записей
 редакт - редактирование записи
 удалить - удаление записи
 помощь - эта справка`);
+      await goToMainMenu(from, session);
       return;
     }
 
@@ -582,6 +748,7 @@ menu - главное меню
 
         if (found.length === 0) {
           await sendMessage(from, "У вас нет записей.");
+          await goToMainMenu(from, session);
           return;
         }
 
@@ -598,6 +765,7 @@ menu - главное меню
       } catch (error) {
         console.error("Error listing records:", error);
         await sendMessage(from, "Ошибка при загрузке записей.");
+        await goToMainMenu(from, session);
       }
       return;
     }
@@ -608,6 +776,7 @@ menu - главное меню
 
       if (isNaN(index) || !session.records || !session.records[index]) {
         await sendMessage(from, "Запись не найдена.");
+        await goToMainMenu(from, session);
         return;
       }
 
@@ -628,7 +797,7 @@ menu - главное меню
 Вкладка: ${record.sheetName}`;
 
       await sendMessage(from, details);
-      session.mode = "menu";
+      await goToMainMenu(from, session);
       return;
     }
 
@@ -639,6 +808,7 @@ menu - главное меню
 
         if (found.length === 0) {
           await sendMessage(from, "У вас нет записей для редактирования.");
+          await goToMainMenu(from, session);
           return;
         }
 
@@ -655,6 +825,7 @@ menu - главное меню
       } catch (error) {
         console.error("Error in EDIT mode:", error);
         await sendMessage(from, "Ошибка при загрузке записей.");
+        await goToMainMenu(from, session);
       }
       return;
     }
@@ -664,6 +835,7 @@ menu - главное меню
 
       if (isNaN(index) || !session.records || !session.records[index]) {
         await sendMessage(from, "Запись не найдена.");
+        await goToMainMenu(from, session);
         return;
       }
 
@@ -687,11 +859,12 @@ menu - главное меню
 
       if (isNaN(fieldIndex) || !editableFields[fieldIndex]) {
         await sendMessage(from, "Поле не найдено.");
+        await goToMainMenu(from, session);
         return;
       }
 
       session.editField = editableFields[fieldIndex];
-      const currentValue = session.editRecord.row[session.editField.col - 1] || "";
+      const currentValue = session.editRecord.row?.[session.editField.col - 1] || "не найдено";
 
       await sendMessage(from, `Текущее значение: ${currentValue}\n\nВведите новое значение для: ${session.editField.label}`);
       session.mode = "edit_enter_value";
@@ -706,7 +879,16 @@ menu - главное меню
 
         if (!columnNumber) {
           await sendMessage(from, "Ошибка выбора колонки.");
+          await goToMainMenu(from, session);
           return;
+        }
+
+        // Validate time if needed
+        if (session.editField.key === "Time in" || session.editField.key === "Time out") {
+          if (!isValidTime(text)) {
+            await sendMessage(from, "Неверный формат времени. Введите ЧЧ:ММ");
+            return;
+          }
         }
 
         await updateCell(sheetName, rowNumber, columnNumber, text);
@@ -720,11 +902,11 @@ menu - главное меню
         }
 
         await sendMessage(from, "✅ Запись обновлена.");
-        session.mode = "menu";
+        await goToMainMenu(from, session);
       } catch (error) {
         console.error("Error updating record:", error);
         await sendMessage(from, "Ошибка при обновлении.");
-        session.mode = "menu";
+        await goToMainMenu(from, session);
       }
       return;
     }
@@ -736,6 +918,7 @@ menu - главное меню
 
         if (found.length === 0) {
           await sendMessage(from, "У вас нет записей для удаления.");
+          await goToMainMenu(from, session);
           return;
         }
 
@@ -752,6 +935,7 @@ menu - главное меню
       } catch (error) {
         console.error("Error in DELETE mode:", error);
         await sendMessage(from, "Ошибка при загрузке записей.");
+        await goToMainMenu(from, session);
       }
       return;
     }
@@ -761,6 +945,7 @@ menu - главное меню
 
       if (isNaN(index) || !session.records || !session.records[index]) {
         await sendMessage(from, "Запись не найдена.");
+        await goToMainMenu(from, session);
         return;
       }
 
@@ -791,39 +976,20 @@ menu - главное меню
           console.error("Error deleting record:", error);
           await sendMessage(from, "Ошибка при удалении записи.");
         }
-        session.mode = "menu";
+        await goToMainMenu(from, session);
         return;
       }
 
       if (text === "DELETE_NO") {
         await sendMessage(from, "Удаление отменено.");
-        session.mode = "menu";
+        await goToMainMenu(from, session);
         return;
       }
     }
 
     // Menu or help
     if (isCommandKeyword(text)) {
-      await sendMessage(from, `Здравствуйте! 👋
-
-Бот для внесения данных по наземному оборудованию.
-
-Введите все данные в одну строку в формате:
-РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР; ОБОРУДОВАНИЕ, ВРЕМЯ_НАЧАЛА, ВРЕМЯ_КОНЦА; ОБОРУДОВАНИЕ2, ВРЕМЯ_НАЧАЛА2, ВРЕМЯ_КОНЦА2; ...
-
-Пример:
-TVR4701, 30.04.2026, ER-BAS, DWC, Ernest; PAXSTEP, 10:00, 12:30; GPU, 12:45, 15:20
-
-Команды:
-список - показать последние записи
-редакт - редактировать запись
-удалить - удалить запись
-помощь - справка
-
-Допустимые значения:
-Самолеты: ${aircraftList.join(", ")}
-Аэропорты: ${airportList.join(", ")}
-Оборудование: ${equipmentList.join(", ")}`);
+      await showMainMenu(from);
       session.mode = "menu";
       return;
     }
@@ -855,6 +1021,7 @@ ${parsed.equipmentEntries.map((item, i) =>
 ).join("\n")}`;
 
       await sendMessage(from, preview);
+      await showMainMenu(from);
       session.mode = "menu";
     } catch (error) {
       console.error("Error saving data:", error);
