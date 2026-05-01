@@ -113,9 +113,40 @@ function calculateUsage(timeIn, timeOut) {
   return `${hours}:${String(minutes).padStart(2, "0")}`;
 }
 
+function normalizeTimeInput(t) {
+  if (!t) return null;
+
+  const value = String(t).trim();
+
+  // Формат 12:00 или 1:30
+  if (/^\d{1,2}:\d{2}$/.test(value)) {
+    const [h, m] = value.split(":").map(Number);
+
+    if (h < 0 || h > 23 || m < 0 || m > 59) {
+      return null;
+    }
+
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  }
+
+  // Формат 1200, 1330, 0905, 905
+  if (/^\d{3,4}$/.test(value)) {
+    const padded = value.padStart(4, "0");
+    const h = Number(padded.slice(0, 2));
+    const m = Number(padded.slice(2, 4));
+
+    if (h < 0 || h > 23 || m < 0 || m > 59) {
+      return null;
+    }
+
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  }
+
+  return null;
+}
+
 function isValidTime(t) {
-  if (!t) return false;
-  return /^\d{1,2}:\d{2}$/.test(t.trim());
+  return normalizeTimeInput(t) !== null;
 }
 
 function parseDateTime(dateText, timeText) {
@@ -520,14 +551,14 @@ function parseInputLine(text) {
     if (equipParts.length < 2) continue;
 
     const equipment = equipParts[0].toUpperCase();
-    const timeIn = equipParts[1];
-    const timeOut = equipParts[2] || "";
+    const timeIn = normalizeTimeInput(equipParts[1]);
+    const timeOut = equipParts[2] ? normalizeTimeInput(equipParts[2]) : "";
 
-    if (!equipment || !isValidTime(timeIn)) {
+    if (!equipment || !timeIn) {
       return null;
     }
 
-    if (timeOut && !isValidTime(timeOut)) {
+    if (equipParts[2] && !timeOut) {
       return null;
     }
 
@@ -593,15 +624,16 @@ app.post("/webhook", async (req, res) => {
 
     if (text === "BTN_ADD") {
       await sendMessage(from, `Введите данные в одну строку в формате:
-РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР / ОБОРУДОВАНИЕ, ВРЕМЯ НАЧАЛА, ВРЕМЯ ОКОНЧАНИЯ / ОБОРУДОВАНИЕ2, ВРЕМЯ НА[...]
+РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР / ОБОРУДОВАНИЕ, ВРЕМЯ НАЧАЛА, ВРЕМЯ ОКОНЧАНИЯ / ОБОРУДОВАНИЕ2, ВРЕМЯ НАЧАЛА, ВРЕМЯ ОКОНЧАНИЯ
 
 ✅ Время окончания необязательно. Его можно добавить позже через «Редактировать» → «Время окончания».
+✅ Время можно вводить без двоеточия: 1200, 1330, 905.
 
 Пример с окончанием:
-TVR4701, 01.05.2026, ER-BAS, HKG, Gromov Roman / PAXSTEP, 10:00, 12:30 / GPU, 12:45, 15:20
+TVR4701, 01.05.2026, ER-BAS, HKG, Gromov Roman / PAXSTEP, 1000, 1230 / GPU, 1245, 1520
 
 Пример без окончания:
-TVR4701, 01.05.2026, ER-BAS, HKG, Gromov Roman / PAXSTEP, 10:00 / GPU, 12:45`);
+TVR4701, 01.05.2026, ER-BAS, HKG, Gromov Roman / PAXSTEP, 1000 / GPU, 1245`);
       session.mode = "menu";
       return;
     }
@@ -694,15 +726,16 @@ TVR4701, 01.05.2026, ER-BAS, HKG, Gromov Roman / PAXSTEP, 10:00 / GPU, 12:45`);
       await sendMessage(from, `📖 СПРАВКА ПО ИСПОЛЬЗОВАНИЮ
 
 Формат ввода данных:
-РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР / ОБОРУДОВАНИЕ, ВРЕМЯ НАЧАЛА, ВРЕМЯ ОКОНЧАНИЯ / ОБОРУДОВАНИЕ2, ВРЕМЯ НА[...]
+РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР / ОБОРУДОВАНИЕ, ВРЕМЯ НАЧАЛА, ВРЕМЯ ОКОНЧАНИЯ / ОБОРУДОВАНИЕ2, ВРЕМЯ НАЧАЛА, ВРЕМЯ ОКОНЧАНИЯ
 
 Время окончания необязательно. Его можно добавить позже через «Редактировать» → «Время окончания».
+Время можно вводить без двоеточия: 1200, 1330, 905.
 
 Пример с окончанием:
-TVR4701, 01.05.2026, ER-BAS, HKG, Gromov Roman / PAXSTEP, 10:00, 12:30 / GPU, 12:45, 15:20
+TVR4701, 01.05.2026, ER-BAS, HKG, Gromov Roman / PAXSTEP, 1000, 1230 / GPU, 1245, 1520
 
 Пример без окончания:
-TVR4701, 01.05.2026, ER-BAS, HKG, Gromov Roman / PAXSTEP, 10:00 / GPU, 12:45
+TVR4701, 01.05.2026, ER-BAS, HKG, Gromov Roman / PAXSTEP, 1000 / GPU, 1245
 
 Допустимые самолеты:
 ${aircraftList.join(", ")}
@@ -721,15 +754,16 @@ ${equipmentList.join(", ")}`);
       await sendMessage(from, `📖 СПРАВКА ПО ИСПОЛЬЗОВАНИЮ
 
 Формат ввода данных:
-РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР / ОБОРУДОВАНИЕ, ВРЕМЯ_НАЧАЛА, ВРЕМЯ_ОКОНЧАНИЯ / ОБОРУДОВАНИЕ2, ВРЕМЯ_НА[...]
+РЕЙС, ДАТА, САМОЛЕТ, АЭРОПОРТ, ИНЖЕНЕР / ОБОРУДОВАНИЕ, ВРЕМЯ_НАЧАЛА, ВРЕМЯ_ОКОНЧАНИЯ / ОБОРУДОВАНИЕ2, ВРЕМЯ_НАЧАЛА, ВРЕМЯ_ОКОНЧАНИЯ
 
 Время окончания необязательно. Его можно добавить позже через «Редактировать» → «Время окончания».
+Время можно вводить без двоеточия: 1200, 1330, 905.
 
 Пример с окончанием:
-TVR4701, 01.05.2026, ER-BAS, HKG, Ernest / PAXSTEP, 10:00, 12:30 / GPU, 12:45, 15:20
+TVR4701, 01.05.2026, ER-BAS, HKG, Ernest / PAXSTEP, 1000, 1230 / GPU, 1245, 1520
 
 Пример без окончания:
-TVR4701, 01.05.2026, ER-BAS, HKG, Ernest / PAXSTEP, 10:00 / GPU, 12:45
+TVR4701, 01.05.2026, ER-BAS, HKG, Ernest / PAXSTEP, 1000 / GPU, 1245
 
 Допустимые самолеты:
 ${aircraftList.join(", ")}
@@ -869,7 +903,9 @@ ${equipmentList.join(", ")}
       session.editField = editableFields[fieldIndex];
       const currentValue = session.editRecord.row?.[session.editField.col - 1] || "не найдено";
 
-      await sendMessage(from, `Текущее значение: ${currentValue}\n\nВведите новое значение для: ${session.editField.label}`);
+      await sendMessage(from, `Текущее значение: ${currentValue}
+
+Введите новое значение для: ${session.editField.label}`);
       session.mode = "edit_enter_value";
       return;
     }
@@ -886,19 +922,25 @@ ${equipmentList.join(", ")}
           return;
         }
 
+        let valueToSave = text;
+
         if (session.editField.key === "Time in" || session.editField.key === "Time out") {
-          if (!isValidTime(text)) {
-            await sendMessage(from, "Неверный формат времени. Введите ЧЧ:ММ");
+          const normalizedTime = normalizeTimeInput(text);
+
+          if (!normalizedTime) {
+            await sendMessage(from, "Неверный формат времени. Введите например 1200, 1330 или 12:00");
             return;
           }
+
+          valueToSave = normalizedTime;
         }
 
-        await updateCell(sheetName, rowNumber, columnNumber, text);
+        await updateCell(sheetName, rowNumber, columnNumber, valueToSave);
 
         if (session.editField.key === "Time in" || session.editField.key === "Time out") {
           const row = session.editRecord.row;
-          const newTimeIn = session.editField.key === "Time in" ? text : row[3];
-          const newTimeOut = session.editField.key === "Time out" ? text : row[4];
+          const newTimeIn = session.editField.key === "Time in" ? valueToSave : row[3];
+          const newTimeOut = session.editField.key === "Time out" ? valueToSave : row[4];
           await recalculateTotalUsage(sheetName, rowNumber, newTimeIn, newTimeOut);
         }
 
@@ -1003,14 +1045,15 @@ ${equipmentList.join(", ")}
 Рейс, дата, самолет, аэропорт, инженер — обязательны.
 Для каждого оборудования нужно минимум время начала.
 Время окончания можно не указывать и добавить позже.
+Время можно вводить без двоеточия: 1200, 1330, 905.
 
 Разделяйте группы оборудования слешем (/)
 
 Пример с окончанием:
-TVR4701, 01.05.2026, ER-BAS, HKG, Ernest / PAXSTEP, 10:00, 12:30 / GPU, 12:45, 15:20
+TVR4701, 01.05.2026, ER-BAS, HKG, Ernest / PAXSTEP, 1000, 1230 / GPU, 1245, 1520
 
 Пример без окончания:
-TVR4701, 01.05.2026, ER-BAS, HKG, Ernest / PAXSTEP, 10:00 / GPU, 12:45
+TVR4701, 01.05.2026, ER-BAS, HKG, Ernest / PAXSTEP, 1000 / GPU, 1245
 
 Напишите 'помощь' для справки.`);
       return;
