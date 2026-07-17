@@ -19,10 +19,13 @@ function createSheetsService(client, spreadsheetId) {
   const cache = new Map();
 
   async function getSheetIdByName(sheetName) {
-    const res = await client.spreadsheets.get({
-      spreadsheetId,
-      timeout: REQUEST_TIMEOUT,
-    });
+    // Второй аргумент — GaxiosOptions (транспорт: timeout и т.п.), а не часть
+    // самого запроса к Google API. Если timeout попадёт в params (первый
+    // аргумент), Google API отклонит его как неизвестный query-параметр.
+    const res = await client.spreadsheets.get(
+      { spreadsheetId },
+      { timeout: REQUEST_TIMEOUT }
+    );
 
     const sheet = res.data.sheets.find((s) => s.properties.title === sheetName);
     // null означает "не найдено" — 0 является настоящим валидным sheetId,
@@ -36,11 +39,10 @@ function createSheetsService(client, spreadsheetId) {
       return cached.data;
     }
 
-    const res = await client.spreadsheets.values.get({
-      spreadsheetId,
-      range: `'${sheetName}'!A:M`,
-      timeout: REQUEST_TIMEOUT,
-    });
+    const res = await client.spreadsheets.values.get(
+      { spreadsheetId, range: `'${sheetName}'!A:M` },
+      { timeout: REQUEST_TIMEOUT }
+    );
 
     const data = res.data.values || [];
     cache.set(sheetName, { data, timestamp: Date.now() });
@@ -81,13 +83,15 @@ function createSheetsService(client, spreadsheetId) {
   async function updateCell(sheetName, rowNumber, columnNumber, value) {
     const columnLetter = lib.columnToLetter(columnNumber);
 
-    await client.spreadsheets.values.update({
-      spreadsheetId,
-      range: `'${sheetName}'!${columnLetter}${rowNumber}`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: [[value]] },
-      timeout: REQUEST_TIMEOUT,
-    });
+    await client.spreadsheets.values.update(
+      {
+        spreadsheetId,
+        range: `'${sheetName}'!${columnLetter}${rowNumber}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [[value]] },
+      },
+      { timeout: REQUEST_TIMEOUT }
+    );
 
     cache.delete(sheetName);
   }
@@ -99,19 +103,21 @@ function createSheetsService(client, spreadsheetId) {
       throw new Error(`Sheet tab "${sheetName}" not found — refusing to delete to avoid touching the wrong tab`);
     }
 
-    await client.spreadsheets.batchUpdate({
-      spreadsheetId,
-      requestBody: {
-        requests: [
-          {
-            deleteDimension: {
-              range: { sheetId, dimension: "ROWS", startIndex: rowNumber - 1, endIndex: rowNumber },
+    await client.spreadsheets.batchUpdate(
+      {
+        spreadsheetId,
+        requestBody: {
+          requests: [
+            {
+              deleteDimension: {
+                range: { sheetId, dimension: "ROWS", startIndex: rowNumber - 1, endIndex: rowNumber },
+              },
             },
-          },
-        ],
+          ],
+        },
       },
-      timeout: REQUEST_TIMEOUT,
-    });
+      { timeout: REQUEST_TIMEOUT }
+    );
 
     cache.delete(sheetName);
   }
@@ -136,25 +142,29 @@ function createSheetsService(client, spreadsheetId) {
       createdAt,
     ]);
 
-    await client.spreadsheets.values.append({
-      spreadsheetId,
-      range: `'${sheetName}'!A:M`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: rows },
-      timeout: REQUEST_TIMEOUT,
-    });
+    await client.spreadsheets.values.append(
+      {
+        spreadsheetId,
+        range: `'${sheetName}'!A:M`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: rows },
+      },
+      { timeout: REQUEST_TIMEOUT }
+    );
 
     cache.delete(sheetName);
   }
 
   async function moveRow(fromSheetName, rowNumber, toSheetName, rowValues) {
-    await client.spreadsheets.values.append({
-      spreadsheetId,
-      range: `'${toSheetName}'!A:M`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: [rowValues] },
-      timeout: REQUEST_TIMEOUT,
-    });
+    await client.spreadsheets.values.append(
+      {
+        spreadsheetId,
+        range: `'${toSheetName}'!A:M`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [rowValues] },
+      },
+      { timeout: REQUEST_TIMEOUT }
+    );
 
     await deleteRow(fromSheetName, rowNumber);
 
